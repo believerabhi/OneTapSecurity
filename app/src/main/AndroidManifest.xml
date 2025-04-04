@@ -30,6 +30,10 @@
             android:exported="false">
         </activity>
 
+        <activity android:name=".ResultActivity"
+            android:exported="false">
+        </activity>
+
         <service
             android:name=".ScreenCaptureService"
             android:exported="false"
