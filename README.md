@@ -41,6 +41,8 @@ The `aianalyzer` package provides AI-enhanced security analysis:
 - `TextClassifier`: Classifies text using TensorFlow Lite models
 - Support classes for results and categorization
 
+See [AI Analyzer README](app/src/main/java/com/onetap/security/aianalyzer/README.md) for details.
+
 ## Integration Flow
 
 1. `ScreenCaptureService` is the main service that orchestrates the screen analysis:
