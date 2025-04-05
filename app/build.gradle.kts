@@ -72,7 +72,17 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     
+    // TensorFlow Lite dependencies
+    implementation("org.tensorflow:tensorflow-lite:2.15.0")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
+    implementation("org.tensorflow:tensorflow-lite-metadata:0.4.4")
+    implementation("org.tensorflow:tensorflow-lite-task-text:0.4.4")
+    
+    // Testing dependencies
     testImplementation(libs.junit)
+    testImplementation("org.mockito:mockito-core:5.0.0")
+    testImplementation("org.mockito:mockito-inline:5.0.0")
+    testImplementation("org.robolectric:robolectric:4.10.3")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }

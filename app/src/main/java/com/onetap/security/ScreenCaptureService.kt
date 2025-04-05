@@ -1,54 +1,46 @@
 package com.onetap.security
 
-// ScreenCaptureService.kt
-
 import android.app.*
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
-import android.media.Image
-import android.media.ImageReader
-import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
-import android.os.Build
-import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.util.DisplayMetrics
 import android.util.Log
-import android.view.WindowManager
 import android.widget.Toast
+import com.onetap.security.aianalyzer.AIIntegration
+import com.onetap.security.aianalyzer.SecurityVerdict
+import com.onetap.security.screencapture.ScreenCaptureManager
 import com.onetap.security.textprocessing.ScreenAnalyzer
 import com.onetap.security.textprocessing.ScreenAnalysisResult
 import kotlinx.coroutines.*
 import java.io.File
-import java.io.FileOutputStream
-import java.nio.ByteBuffer
 
 class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
     private val TAG = "ScreenCaptureService"
-    private lateinit var projectionManager: MediaProjectionManager
-    private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private lateinit var imageReader: ImageReader
-    private var imageCaptured = false
     private val handler = Handler(Looper.getMainLooper())
+    
+    // Refactored components
+    private lateinit var screenCaptureManager: ScreenCaptureManager
     private lateinit var screenAnalyzer: ScreenAnalyzer
+    private lateinit var aiIntegration: AIIntegration
 
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "onDestroy called")
-        mediaProjection?.stop()
-        virtualDisplay?.release()
-        if (::imageReader.isInitialized) {
-            imageReader.close()
+        
+        // Clean up resources
+        if (::screenCaptureManager.isInitialized) {
+            screenCaptureManager.release()
         }
         if (::screenAnalyzer.isInitialized) {
             screenAnalyzer.close()
         }
+        if (::aiIntegration.isInitialized) {
+            aiIntegration.close()
+        }
+        
         // Cancel all coroutines when service is destroyed
         cancel()
     }
@@ -56,10 +48,39 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "onCreate called")
-        projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        
+        // Initialize screen capture manager
+        screenCaptureManager = ScreenCaptureManager(this, handler, this)
+        screenCaptureManager.initialize()
+        
+        // Set up screen capture listener
+        screenCaptureManager.setScreenCaptureListener(
+            onSuccess = { screenshotPath, screenshotFile ->
+                // Process the captured screenshot
+                processScreenshot(screenshotPath)
+            },
+            onError = { errorMessage ->
+                Log.e(TAG, "Screen capture error: $errorMessage")
+                Toast.makeText(this, "Screen capture failed: $errorMessage", Toast.LENGTH_SHORT).show()
+                stopSelf()
+            }
+        )
         
         // Initialize screen analyzer
         screenAnalyzer = ScreenAnalyzer(this)
+        
+        // Initialize AI integration
+        aiIntegration = AIIntegration(this)
+        
+        // Initialize AI in background
+        launch {
+            try {
+                aiIntegration.initialize()
+                Log.d(TAG, "AI Integration initialized successfully")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error initializing AI: ${e.message}")
+            }
+        }
         
         // Create notification channel first
         createNotificationChannel()
@@ -105,56 +126,10 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         try {
             val resultCode = intent.getIntExtra("code", -1)
             val resultData = intent.getParcelableExtra<Intent>("data") ?: return START_NOT_STICKY
-
-            val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val metrics = DisplayMetrics().apply {
-                wm.defaultDisplay.getRealMetrics(this)
-            }
-
-            imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, 0x1, 2)
             
-            // Get the media projection and register callback
-            mediaProjection = projectionManager.getMediaProjection(resultCode, resultData).apply {
-                // Register callback (required for Android 12+ / API 31+)
-                registerCallback(mediaProjectionCallback, handler)
-            }
+            // Start screen capture
+            screenCaptureManager.startScreenCapture(resultCode, resultData)
             
-            // Create virtual display after callback is registered
-            virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "ScreenCapture",
-                metrics.widthPixels,
-                metrics.heightPixels,
-                metrics.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader.surface,
-                null,
-                handler
-            )
-
-            // Schedule screenshot capture
-            handler.postDelayed({
-                if (!imageCaptured) {
-                    imageCaptured = true
-                    Log.d(TAG, "Taking screenshot")
-                    val image = imageReader.acquireLatestImage()
-                    if (image != null) {
-                        val screenshotFile = saveImage(image)
-                        image.close()
-                        
-                        if (screenshotFile != null) {
-                            // Process the saved screenshot
-                            processScreenshot(screenshotFile.absolutePath)
-                        } else {
-                            Log.e(TAG, "Failed to save screenshot")
-                            stopSelf()
-                        }
-                    } else {
-                        Log.e(TAG, "Failed to acquire image")
-                        stopSelf()
-                    }
-                }
-            }, 1000)
-
         } catch (e: Exception) {
             Log.e(TAG, "Error in onStartCommand: ${e.message}")
             e.printStackTrace()
@@ -163,46 +138,6 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         }
 
         return START_STICKY
-    }
-
-    // MediaProjection callback - required for newer Android versions
-    private val mediaProjectionCallback = object : MediaProjection.Callback() {
-        override fun onStop() {
-            Log.d(TAG, "MediaProjection stopped")
-            virtualDisplay?.release()
-            if (::imageReader.isInitialized) {
-                imageReader.close()
-            }
-            handler.removeCallbacksAndMessages(null)
-        }
-    }
-
-    private fun saveImage(image: Image): File? {
-        try {
-            val planes = image.planes
-            val buffer: ByteBuffer = planes[0].buffer
-            val pixelStride = planes[0].pixelStride
-            val rowStride = planes[0].rowStride
-            val rowPadding = rowStride - pixelStride * image.width
-
-            val bitmap = Bitmap.createBitmap(
-                image.width + rowPadding / pixelStride,
-                image.height,
-                Bitmap.Config.ARGB_8888
-            )
-            bitmap.copyPixelsFromBuffer(buffer)
-
-            val file = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "screenshot.png")
-            FileOutputStream(file).use {
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
-                Log.d(TAG, "Saved screenshot to: ${file.absolutePath}")
-            }
-            return file
-        } catch (e: Exception) {
-            Log.e(TAG, "Error saving image: ${e.message}")
-            e.printStackTrace()
-            return null
-        }
     }
     
     /**
@@ -255,14 +190,106 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
      * Handle the results of screen analysis
      */
     private fun handleScreenAnalysisResult(result: ScreenAnalysisResult, screenshotPath: String) {
-        Log.d(TAG, "Screen analysis completed, success: ${result.success}")
-        
+        launch(Dispatchers.Main) {
+            Log.d(TAG, "Screen analysis completed, success: ${result.success}")
+            
+            if (result.success && result.securityAnalysis != null && result.extractedText != null) {
+                try {
+                    // Enhance analysis with AI if possible
+                    val enhancedResult = if (::aiIntegration.isInitialized) {
+                        withContext(Dispatchers.Default) {
+                            try {
+                                aiIntegration.enhanceAnalysis(
+                                    result.extractedText,
+                                    result.securityAnalysis
+                                )
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error in AI analysis: ${e.message}")
+                                null
+                            }
+                        }
+                    } else null
+                    
+                    val securityRisks = enhancedResult?.mergedRisks ?: result.securityAnalysis.securityRisks
+                    val sensitiveInfo = result.securityAnalysis.sensitiveInformation
+                    
+                    // Determine notification based on verdict or risk level
+                    if (securityRisks.isNotEmpty() || sensitiveInfo.isNotEmpty()) {
+                        // Security risks or sensitive information detected
+                        val risksText = if (securityRisks.isNotEmpty()) {
+                            "${securityRisks.size} security risks found"
+                        } else {
+                            "No security risks found"
+                        }
+                        
+                        val sensitiveText = if (sensitiveInfo.isNotEmpty()) {
+                            "${sensitiveInfo.size} pieces of sensitive information detected"
+                        } else {
+                            "No sensitive information detected"
+                        }
+                        
+                        // If we have an AI verdict, include it
+                        val verdictText = if (enhancedResult != null) {
+                            when (enhancedResult.securityVerdict) {
+                                SecurityVerdict.DANGEROUS -> "\n\nVERDICT: DANGEROUS - Take immediate action"
+                                SecurityVerdict.HIGH_RISK -> "\n\nVERDICT: HIGH RISK - Be very cautious"
+                                SecurityVerdict.SUSPICIOUS -> "\n\nVERDICT: SUSPICIOUS - Exercise caution"
+                                SecurityVerdict.CONTAINS_SENSITIVE_INFO -> "\n\nVERDICT: CONTAINS SENSITIVE INFO"
+                                SecurityVerdict.LOW_RISK -> "\n\nVERDICT: LOW RISK"
+                                SecurityVerdict.SAFE -> "\n\nVERDICT: SAFE"
+                                else -> ""
+                            }
+                        } else ""
+                        
+                        showResultNotification(
+                            "Security Alert",
+                            "$risksText\n$sensitiveText$verdictText",
+                            result.extractedText.fullText
+                        )
+                        
+                        // Here you could save the analysis results to a database
+                        // or perform other actions like sending alerts
+                        
+                        Log.d(TAG, "Security risks: $securityRisks")
+                        Log.d(TAG, "Sensitive info: $sensitiveInfo")
+                        if (enhancedResult != null) {
+                            Log.d(TAG, "AI Verdict: ${enhancedResult.securityVerdict}")
+                        }
+                    } else {
+                        // No security risks or sensitive information detected
+                        showResultNotification(
+                            "Screen Analyzed",
+                            "No security risks or sensitive information detected" +
+                            if (enhancedResult?.securityVerdict == SecurityVerdict.SAFE) " (AI Verified)" else "",
+                            result.extractedText.fullText
+                        )
+                        Log.d(TAG, "No security risks or sensitive information detected")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing analysis results: ${e.message}")
+                    fallbackResultHandling(result)
+                }
+            } else {
+                // Analysis failed
+                fallbackResultHandling(result)
+            }
+            
+            // Give time for notification to be seen, then stop service
+            handler.postDelayed({
+                stopSelf()
+            }, 5000)
+        }
+    }
+    
+    /**
+     * Fallback handling for when AI enhancement fails
+     */
+    private fun fallbackResultHandling(result: ScreenAnalysisResult) {
         if (result.success && result.securityAnalysis != null) {
             val securityRisks = result.securityAnalysis.securityRisks
             val sensitiveInfo = result.securityAnalysis.sensitiveInformation
             
             if (securityRisks.isNotEmpty() || sensitiveInfo.isNotEmpty()) {
-                // Security risks or sensitive information detected
                 val risksText = if (securityRisks.isNotEmpty()) {
                     "${securityRisks.size} security risks found"
                 } else {
@@ -280,20 +307,12 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
                     "$risksText\n$sensitiveText",
                     result.extractedText?.fullText
                 )
-                
-                // Here you could save the analysis results to a database
-                // or perform other actions like sending alerts
-                
-                Log.d(TAG, "Security risks: $securityRisks")
-                Log.d(TAG, "Sensitive info: $sensitiveInfo")
             } else {
-                // No security risks or sensitive information detected
                 showResultNotification(
                     "Screen Analyzed",
                     "No security risks or sensitive information detected",
                     result.extractedText?.fullText
                 )
-                Log.d(TAG, "No security risks or sensitive information detected")
             }
         } else {
             // Analysis failed
@@ -304,11 +323,6 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
             )
             Log.e(TAG, "Analysis failed: ${result.errorMessage}")
         }
-        
-        // Give time for notification to be seen, then stop service
-        handler.postDelayed({
-            stopSelf()
-        }, 5000)
     }
     
     /**

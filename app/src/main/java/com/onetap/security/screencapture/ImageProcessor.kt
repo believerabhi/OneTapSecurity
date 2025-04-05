@@ -1,4 +1,4 @@
-package com.onetap.security.textprocessing
+package com.onetap.security.screencapture
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
