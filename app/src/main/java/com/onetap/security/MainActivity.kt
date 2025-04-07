@@ -55,6 +55,9 @@ class MainActivity : ComponentActivity() {
                         securityEnabled = viewModel.securityEnabled.value,
                         onSecurityToggleChange = { enabled ->
                             viewModel.setSecurityEnabled(enabled)
+                            if (!enabled) {
+                                stopFloatingWidgetService()
+                            }
                         },
                         onStartProtectionClick = {
                             if (Settings.canDrawOverlays(this)) {
@@ -74,6 +77,24 @@ class MainActivity : ComponentActivity() {
         val serviceIntent = Intent(this, FloatingWidgetService::class.java)
         startForegroundService(serviceIntent)
         Toast.makeText(this, "Floating widget enabled", Toast.LENGTH_SHORT).show()
+    }
+    
+    private fun stopFloatingWidgetService() {
+        val serviceIntent = Intent(this, FloatingWidgetService::class.java)
+        if (isServiceRunning(FloatingWidgetService::class.java)) {
+            stopService(serviceIntent)
+            Toast.makeText(this, "Floating widget disabled", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    private fun isServiceRunning(serviceClass: Class<*>): Boolean {
+        val manager = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        for (service in manager.getRunningServices(Integer.MAX_VALUE)) {
+            if (serviceClass.name == service.service.className) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun requestOverlayPermission() {

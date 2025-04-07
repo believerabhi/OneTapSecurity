@@ -85,9 +85,11 @@ class FloatingWidgetService : Service() {
                             abs(event.rawY - initialTouchY) > 10
 
                     if (!moved && touchDuration < CLICK_TIME_THRESHOLD) {
-                        // Show popup message if it was a click (not a drag)
-
-
+                        // Launch ProjectionPermissionActivity to request screen capture permission
+                        val intent = Intent(this@FloatingWidgetService, ProjectionPermissionActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(intent)
                     }
                     true
                 }
