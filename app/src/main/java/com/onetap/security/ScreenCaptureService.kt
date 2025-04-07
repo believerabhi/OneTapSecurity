@@ -14,12 +14,16 @@ import com.onetap.security.aianalyzer.SecurityVerdict
 import com.onetap.security.screencapture.ScreenCaptureManager
 import com.onetap.security.textprocessing.ScreenAnalyzer
 import com.onetap.security.textprocessing.ScreenAnalysisResult
+import com.onetap.security.utils.SecurityPreferences
 import kotlinx.coroutines.*
 import java.io.File
 
 class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
     private val TAG = "ScreenCaptureService"
     private val handler = Handler(Looper.getMainLooper())
+    
+    // Security preferences
+    private lateinit var securityPreferences: SecurityPreferences
     
     // Refactored components
     private lateinit var screenCaptureManager: ScreenCaptureManager
@@ -48,6 +52,9 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "onCreate called")
+        
+        // Initialize security preferences
+        securityPreferences = SecurityPreferences.getInstance(this)
         
         // Initialize screen capture manager
         screenCaptureManager = ScreenCaptureManager(this, handler, this)
@@ -91,7 +98,7 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
 
     private fun createNotificationChannel() {
         val channelId = "screencapture"
-        val channelName = "Screen Analyzer"
+        val channelName = getString(R.string.notification_channel_name)
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val chan = NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_LOW)
         manager.createNotificationChannel(chan)
@@ -104,8 +111,8 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         val pendingIntent = PendingIntent.getActivity(this, 0, tapIntent, PendingIntent.FLAG_IMMUTABLE)
 
         return Notification.Builder(this, channelId)
-            .setContentTitle("Screen Analyzer Running")
-            .setContentText("Tap to capture screen")
+            .setContentTitle(getString(R.string.notification_running))
+            .setContentText(getString(R.string.notification_tap_capture))
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(pendingIntent)
             .build()
@@ -144,6 +151,12 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
      * Process the captured screenshot using the ScreenAnalyzer
      */
     private fun processScreenshot(screenshotPath: String) {
+        // Check if security feature is enabled
+        if (!securityPreferences.isSecurityEnabled()) {
+            Log.d(TAG, "Security monitoring is disabled, ignoring screenshot")
+            stopSelf()
+            return
+        }
         launch(Dispatchers.Main) {
             try {
                 // Show processing notification
@@ -179,8 +192,8 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         val channelId = "screencapture"
         
         return Notification.Builder(this, channelId)
-            .setContentTitle("Processing Screenshot")
-            .setContentText("Analyzing screen contents...")
+            .setContentTitle(getString(R.string.notification_processing))
+            .setContentText(getString(R.string.notification_analyzing))
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setOngoing(true)
             .build()

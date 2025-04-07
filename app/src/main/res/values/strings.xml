@@ -1,3 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">One Tap Security</string>
+    <string name="app_name">OneTap Security</string>
+    
+    <!-- MainActivity -->
+    <string name="app_title">OneTap Security</string>
+    <string name="app_description">OneTap Security helps protect your device by monitoring screens for potential security threats and sensitive information.</string>
+    <string name="security_monitor_title">Security Monitor</string>
+    <string name="security_monitor_description">Monitors your screen for security threats, phishing attempts, and sensitive information. Toggle to enable or disable.</string>
+    <string name="security_monitor_active">Security monitor is active</string>
+    <string name="security_monitor_disabled">Security monitor is disabled</string>
+    <string name="start_protection">Start Protection</string>
+    <string name="enable_security_first">Please enable security monitoring first</string>
+    <string name="security_started">Security monitoring started</string>
+    
+    <!-- Notifications -->
+    <string name="notification_channel_name">Screen Analyzer</string>
+    <string name="notification_running">Screen Analyzer Running</string>
+    <string name="notification_tap_capture">Tap to capture screen</string>
+    <string name="notification_processing">Processing Screenshot</string>
+    <string name="notification_analyzing">Analyzing screen contents…</string>
+    
+    <!-- Permissions -->
+    <string name="permission_required">Notification permission required</string>
+    <string name="screen_capture_required">Screen capture permission is required</string>
+    <string name="failed_projection">Failed to start media projection</string>
 </resources>
