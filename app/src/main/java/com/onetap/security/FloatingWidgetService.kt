@@ -5,20 +5,27 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.PixelFormat
 import android.os.IBinder
+import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.ProgressBar
 import androidx.core.app.NotificationCompat
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import kotlin.math.abs
 
 class FloatingWidgetService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var floatingView: View
+    private lateinit var loadingIndicator: ProgressBar
     private var initialX = 0
     private var initialY = 0
     private var initialTouchX = 0f
@@ -29,6 +36,27 @@ class FloatingWidgetService : Service() {
         private const val NOTIFICATION_CHANNEL_ID = "FloatingWidgetChannel"
         private const val NOTIFICATION_ID = 1001
         private const val CLICK_TIME_THRESHOLD = 200L
+        
+        // Broadcast Actions
+        const val ACTION_SCREENSHOT_PROCESSING_STARTED = "com.onetap.security.ACTION_SCREENSHOT_PROCESSING_STARTED"
+        const val ACTION_SCREENSHOT_PROCESSING_FINISHED = "com.onetap.security.ACTION_SCREENSHOT_PROCESSING_FINISHED"
+        const val TAG = "FloatingWidgetService"
+    }
+    
+    // Broadcast receiver to handle screenshot processing status
+    private val screenshotProcessingReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                ACTION_SCREENSHOT_PROCESSING_STARTED -> {
+                    Log.d(TAG, "Received broadcast: Screenshot processing started")
+                    showLoadingIndicator()
+                }
+                ACTION_SCREENSHOT_PROCESSING_FINISHED -> {
+                    Log.d(TAG, "Received broadcast: Screenshot processing finished")
+                    hideLoadingIndicator()
+                }
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? {
@@ -59,6 +87,9 @@ class FloatingWidgetService : Service() {
 
         // Inflate the floating widget layout
         floatingView = LayoutInflater.from(this).inflate(R.layout.floating_widget, null)
+        
+        // Initialize the loading indicator
+        loadingIndicator = floatingView.findViewById(R.id.loading_indicator)
 
         // Set up touch listener for dragging
         floatingView.setOnTouchListener { _, event ->
@@ -100,6 +131,27 @@ class FloatingWidgetService : Service() {
 
         // Add the view to the window
         windowManager.addView(floatingView, layoutParams)
+        
+        // Register broadcast receiver for screenshot processing status
+        val intentFilter = IntentFilter().apply {
+            addAction(ACTION_SCREENSHOT_PROCESSING_STARTED)
+            addAction(ACTION_SCREENSHOT_PROCESSING_FINISHED)
+        }
+        LocalBroadcastManager.getInstance(this).registerReceiver(screenshotProcessingReceiver, intentFilter)
+    }
+    
+    private fun showLoadingIndicator() {
+        // Hide the icon and show the loading indicator
+        val floatingIcon = floatingView.findViewById<View>(R.id.floating_icon)
+        floatingIcon.visibility = View.GONE
+        loadingIndicator.visibility = View.VISIBLE
+    }
+    
+    private fun hideLoadingIndicator() {
+        // Show the icon and hide the loading indicator
+        val floatingIcon = floatingView.findViewById<View>(R.id.floating_icon)
+        floatingIcon.visibility = View.VISIBLE
+        loadingIndicator.visibility = View.GONE
     }
 
     private fun startForeground() {
@@ -137,6 +189,13 @@ class FloatingWidgetService : Service() {
         super.onDestroy()
         if (::floatingView.isInitialized && floatingView.isAttachedToWindow) {
             windowManager.removeView(floatingView)
+        }
+        
+        // Unregister broadcast receiver
+        try {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(screenshotProcessingReceiver)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error unregistering receiver: ${e.message}")
         }
     }
 }

@@ -8,15 +8,23 @@
         android:layout_width="48dp"
         android:layout_height="48dp"
         android:gravity="center"
-        android:orientation="vertical"
-        android:padding="8dp">
+        android:orientation="vertical">
 
         <ImageView
             android:id="@+id/floating_icon"
             android:layout_width="32dp"
             android:layout_height="32dp"
+            android:layout_gravity="center"
             android:contentDescription="@string/app_shortcut_widget_description"
-            android:src="@drawable/ic_shortcut" />
+            android:src="@drawable/ic_shortcut"
+            android:visibility="visible" />
+
+        <ProgressBar
+            android:id="@+id/loading_indicator"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_gravity="center"
+            android:visibility="gone" />
 
     </LinearLayout>
 </FrameLayout>

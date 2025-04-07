@@ -159,6 +159,12 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         }
         launch(Dispatchers.Main) {
             try {
+                // Notify that processing has started (send broadcast to FloatingWidgetService)
+                val startProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_STARTED)
+                androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this@ScreenCaptureService)
+                    .sendBroadcast(startProcessingIntent)
+                Log.d(TAG, "Sent broadcast: Screenshot processing started")
+                
                 // Show processing notification
                 val processingNotification = createProcessingNotification()
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -172,12 +178,23 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
                 // Handle the results
                 handleScreenAnalysisResult(result, screenshotPath)
                 
+                // Notify that processing has finished
+                val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+                androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this@ScreenCaptureService)
+                    .sendBroadcast(finishProcessingIntent)
+                Log.d(TAG, "Sent broadcast: Screenshot processing finished")
+                
             } catch (e: Exception) {
                 Log.e(TAG, "Error processing screenshot: ${e.message}")
                 e.printStackTrace()
                 
                 // Show error notification
                 showResultNotification("Error processing screenshot", "Unable to analyze the screen contents.", null)
+                
+                // Notify that processing has finished with error
+                val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+                androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this@ScreenCaptureService)
+                    .sendBroadcast(finishProcessingIntent)
                 
                 // Stop the service
                 stopSelf()
