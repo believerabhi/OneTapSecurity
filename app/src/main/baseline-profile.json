@@ -1,0 +1,35 @@
+{
+  "description": "Baseline profile for OneTap Security App",
+  "hashes": [
+    {
+      "hint": "com.onetap.security.MainActivity",
+      "type": "CLASS",
+      "pattern": "Lcom/onetap/security/MainActivity;"
+    },
+    {
+      "hint": "com.onetap.security.ui.SecurityScreen",
+      "type": "CLASS",
+      "pattern": "Lcom/onetap/security/ui/SecurityScreen;"
+    },
+    {
+      "hint": "com.onetap.security.ui.SecurityViewModel",
+      "type": "CLASS",
+      "pattern": "Lcom/onetap/security/ui/SecurityViewModel;"
+    },
+    {
+      "hint": "androidx.compose.material3.Surface",
+      "type": "CLASS",
+      "pattern": "Landroidx/compose/material3/Surface;"
+    },
+    {
+      "hint": "androidx.compose.material3.MaterialTheme",
+      "type": "CLASS",
+      "pattern": "Landroidx/compose/material3/MaterialTheme;"
+    },
+    {
+      "hint": "androidx.compose.material3.Text",
+      "type": "CLASS",
+      "pattern": "Landroidx/compose/material3/Text;"
+    }
+  ]
+}

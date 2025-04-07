@@ -10,29 +10,98 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import com.onetap.security.ui.SecurityScreen
+import com.onetap.security.ui.SecurityViewModel
+import com.onetap.security.ui.theme.OneTapSecurityTheme
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : ComponentActivity() {
     private val TAG = "MainActivity"
     private lateinit var projectionManager: MediaProjectionManager
-    private val SCREEN_CAPTURE_REQUEST_CODE = 1001
-    private val PERMISSION_REQUEST_CODE = 1002
+    
+    // Activity result launchers
+    private lateinit var permissionLauncher: ActivityResultLauncher<String>
+    private lateinit var mediaProjectionLauncher: ActivityResultLauncher<Intent>
+    
+    // ViewModel
+    private val viewModel: SecurityViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "onCreate called")
         
+        // Initialize activity result launchers
+        initializeActivityResultLaunchers()
+        
+        // Set up Compose UI
+        setContent {
+            OneTapSecurityTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    SecurityScreen(
+                        securityEnabled = viewModel.securityEnabled.value,
+                        onSecurityToggleChange = { enabled ->
+                            viewModel.setSecurityEnabled(enabled)
+                        },
+                        onStartProtectionClick = {
+                            checkPermissionsAndStartService()
+                        }
+                    )
+                }
+            }
+        }
+    }
+    
+    private fun initializeActivityResultLaunchers() {
+        // Permission launcher
+        permissionLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { isGranted ->
+            if (isGranted) {
+                requestMediaProjection()
+            } else {
+                Toast.makeText(this, R.string.permission_required, Toast.LENGTH_SHORT).show()
+            }
+        }
+        
+        // Media projection launcher
+        mediaProjectionLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+                Log.d(TAG, "Screen capture permission granted")
+                val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
+                    putExtra("code", result.resultCode)
+                    putExtra("data", result.data)
+                }
+                startForegroundService(serviceIntent)
+                // Minimize the app but don't finish
+                moveTaskToBack(true)
+                Toast.makeText(this, R.string.security_started, Toast.LENGTH_SHORT).show()
+            } else {
+                Log.d(TAG, "Screen capture permission denied")
+                Toast.makeText(this, R.string.screen_capture_required, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    
+    private fun checkPermissionsAndStartService() {
         // Check for POST_NOTIFICATIONS permission on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) 
                     != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    PERMISSION_REQUEST_CODE
-                )
+                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             } else {
                 requestMediaProjection()
             }
@@ -45,45 +114,10 @@ class MainActivity : AppCompatActivity() {
         try {
             projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val captureIntent = projectionManager.createScreenCaptureIntent()
-            startActivityForResult(captureIntent, SCREEN_CAPTURE_REQUEST_CODE)
+            mediaProjectionLauncher.launch(captureIntent)
         } catch (e: Exception) {
             Log.e(TAG, "Error requesting media projection: ${e.message}")
-            Toast.makeText(this, "Failed to start media projection", Toast.LENGTH_SHORT).show()
-            finish()
-        }
-    }
-    
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                requestMediaProjection()
-            } else {
-                Toast.makeText(this, "Notification permission required", Toast.LENGTH_SHORT).show()
-                finish()
-            }
-        }
-    }
-    
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == SCREEN_CAPTURE_REQUEST_CODE) {
-            if (resultCode == Activity.RESULT_OK && data != null) {
-                Log.d(TAG, "Screen capture permission granted")
-                val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
-                    putExtra("code", resultCode)
-                    putExtra("data", data)
-                }
-                startForegroundService(serviceIntent)
-            } else {
-                Log.d(TAG, "Screen capture permission denied")
-                Toast.makeText(this, "Screen capture permission is required", Toast.LENGTH_SHORT).show()
-            }
-            finish()
+            Toast.makeText(this, R.string.failed_projection, Toast.LENGTH_SHORT).show()
         }
     }
 }
