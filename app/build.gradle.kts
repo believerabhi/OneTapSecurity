@@ -100,6 +100,9 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite-metadata:0.4.4")
     implementation("org.tensorflow:tensorflow-lite-task-text:0.4.4")
     
+    // LocalBroadcastManager
+    implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
+    
     // Performance optimization
     implementation("androidx.profileinstaller:profileinstaller:1.3.1")
     
