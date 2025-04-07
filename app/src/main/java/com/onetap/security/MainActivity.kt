@@ -44,9 +44,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "onCreate called")
         
-        // Initialize activity result launchers
-        initializeActivityResultLaunchers()
-        
         // Set up Compose UI
         setContent {
             OneTapSecurityTheme {
