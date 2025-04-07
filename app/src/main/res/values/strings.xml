@@ -24,4 +24,9 @@
     <string name="permission_required">Notification permission required</string>
     <string name="screen_capture_required">Screen capture permission is required</string>
     <string name="failed_projection">Failed to start media projection</string>
+
+    <string name="app_shortcut_widget_label">Quick Access</string>
+    <string name="app_shortcut_widget_description">App shortcut widget icon</string>
+    <string name="app_is_running">App is still running</string>
+    <string name="enable_widget">Enable Widget</string>
 </resources>
