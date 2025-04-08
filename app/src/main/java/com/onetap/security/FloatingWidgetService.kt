@@ -117,10 +117,19 @@ class FloatingWidgetService : Service() {
 
                     if (!moved && touchDuration < CLICK_TIME_THRESHOLD) {
                         // Launch ProjectionPermissionActivity to request screen capture permission
-                        val intent = Intent(this@FloatingWidgetService, ProjectionPermissionActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        if (ProjectionStore.resultCode != -1 && ProjectionStore.resultData != null) {
+                            val captureIntent = Intent(this@FloatingWidgetService, ScreenCaptureService::class.java).apply {
+                                putExtra("resultCode", ProjectionStore.resultCode)
+                                putExtra("data", ProjectionStore.resultData)
+                            }
+                            startForegroundService(captureIntent)
+                        } else {
+                            // Permission not yet granted — launch ProjectionPermissionActivity
+                            val intent = Intent(this@FloatingWidgetService, ProjectionPermissionActivity::class.java).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(intent)
                         }
-                        startActivity(intent)
                     }
                     true
                 }

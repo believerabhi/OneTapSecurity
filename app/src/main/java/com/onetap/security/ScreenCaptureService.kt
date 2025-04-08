@@ -122,18 +122,18 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand called")
-        
+
         // Make sure we're starting with required projection data
-        if (intent?.hasExtra("code") != true || intent.hasExtra("data") != true) {
+        if (intent == null || !intent.hasExtra("resultCode") || !intent.hasExtra("data")) {
             Log.e(TAG, "Missing required projection data")
             stopSelf()
             return START_NOT_STICKY
         }
 
         try {
-            val resultCode = intent.getIntExtra("code", -1)
+            val resultCode = intent.getIntExtra("resultCode", Activity.RESULT_CANCELED)
             val resultData = intent.getParcelableExtra<Intent>("data") ?: return START_NOT_STICKY
-            
+
             // Start screen capture
             screenCaptureManager.startScreenCapture(resultCode, resultData)
             

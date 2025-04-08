@@ -49,7 +49,6 @@ class MainActivity : ComponentActivity() {
                         onStartProtectionClick = {
                             if (Settings.canDrawOverlays(this)) {
                                 startFloatingWidgetService()
-                                finishAndRemoveTask()
                             } else {
                                 requestOverlayPermission()
                             }
@@ -61,9 +60,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startFloatingWidgetService() {
-        val serviceIntent = Intent(this, FloatingWidgetService::class.java)
-        startForegroundService(serviceIntent)
-        Toast.makeText(this, "Floating widget enabled", Toast.LENGTH_SHORT).show()
+        startActivity(Intent(this, ProjectionPermissionActivity::class.java))
     }
     
     private fun stopFloatingWidgetService() {
@@ -98,7 +95,6 @@ class MainActivity : ComponentActivity() {
         if (requestCode == OVERLAY_PERMISSION_REQUEST_CODE) {
             if (Settings.canDrawOverlays(this)) {
                 startFloatingWidgetService()
-                finishAndRemoveTask()
             } else {
                 Toast.makeText(
                     this,
