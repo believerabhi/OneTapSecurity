@@ -3,7 +3,9 @@ package com.onetap.security
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -14,10 +16,10 @@ import com.onetap.security.utils.SecurityPreferences
 class ProjectionPermissionActivity : ComponentActivity() {
     private val TAG = "ProjectionPermActivity"
     private lateinit var projectionManager: MediaProjectionManager
-    
+
     // Security preferences
     private lateinit var securityPreferences: SecurityPreferences
-    
+
     // Media projection launcher
     private val mediaProjectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -39,10 +41,10 @@ class ProjectionPermissionActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "onCreate called")
-        
+
         // Initialize security preferences
         securityPreferences = SecurityPreferences.getInstance(this)
-        
+
         // Check if security is enabled
         if (!securityPreferences.isSecurityEnabled()) {
             Log.d(TAG, "Security monitoring is disabled")
@@ -50,11 +52,19 @@ class ProjectionPermissionActivity : ComponentActivity() {
             finish()
             return
         }
-        
+
         try {
-            projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val captureIntent = projectionManager.createScreenCaptureIntent()
-            mediaProjectionLauncher.launch(captureIntent)
+            projectionManager =
+                getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                mediaProjectionLauncher.launch(
+                    projectionManager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+                )
+            } else {
+                mediaProjectionLauncher.launch(
+                    projectionManager.createScreenCaptureIntent()
+                )
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error requesting projection: ${e.message}")
             Toast.makeText(this, R.string.failed_projection, Toast.LENGTH_SHORT).show()
