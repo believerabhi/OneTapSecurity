@@ -7,7 +7,6 @@ data class TextExtractionResult(
     val fullText: String,
     val lines: List<String>,
     val blocks: List<TextBlock>,
-    val imagePath: String,
     val success: Boolean,
     val errorMessage: String? = null
 )

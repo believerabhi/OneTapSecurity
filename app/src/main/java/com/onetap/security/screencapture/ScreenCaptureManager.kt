@@ -13,23 +13,22 @@ import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
-import android.os.Environment
 import android.os.Handler
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
-import java.io.File
-import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import kotlinx.coroutines.CoroutineScope
 import java.util.concurrent.atomic.AtomicInteger
+import androidx.core.graphics.createBitmap
 
 /**
  * Manager class responsible for screen capture functionality
  */
 class ScreenCaptureManager(
     private val context: Context,
-    private val handler: Handler
+    private val handler: Handler,
+    private val coroutineScope: CoroutineScope
 ) {
     private val TAG = "ScreenCaptureManager"
     private lateinit var projectionManager: MediaProjectionManager
@@ -42,7 +41,15 @@ class ScreenCaptureManager(
     private var retryCount = 0
     private val MAX_RETRY_COUNT = 3 // Limit retries to prevent infinite loop
     private val capturedImageCount = AtomicInteger(0)
-    private val MAX_IMAGES = 3 // Maximum number of images to process
+    private val MAX_IMAGES = 1 // Just capture one image
+    
+    // Callback interface for in-memory screenshot processing
+    interface ScreenshotCallback {
+        fun onScreenshotCaptured(bitmap: Bitmap)
+        fun onError(errorMessage: String)
+    }
+
+    private var screenshotCallback: ScreenshotCallback? = null
     
     // Use a concrete callback instance rather than a nullable one
     private val mediaProjectionCallback = object : MediaProjection.Callback() {
@@ -61,9 +68,6 @@ class ScreenCaptureManager(
         }
     }
     
-    private var onScreenCapturedListener: ((String, File) -> Unit)? = null
-    private var onScreenCaptureErrorListener: ((String) -> Unit)? = null
-    
     /**
      * Initialize the screen capture manager
      */
@@ -73,14 +77,10 @@ class ScreenCaptureManager(
     }
     
     /**
-     * Set the screen capture callback listener
+     * Set the callback for direct bitmap processing
      */
-    fun setScreenCaptureListener(
-        onSuccess: (String, File) -> Unit,
-        onError: (String) -> Unit
-    ) {
-        onScreenCapturedListener = onSuccess
-        onScreenCaptureErrorListener = onError
+    fun setScreenshotCallback(callback: ScreenshotCallback) {
+        screenshotCallback = callback
     }
 
     /**
@@ -120,12 +120,24 @@ class ScreenCaptureManager(
                     
                     val image = reader.acquireLatestImage()
                     if (image != null) {
-                        handleImageCaptured(image)
+                        processImageDirectly(image)
                     } else {
                         Log.e(TAG, "Null image in OnImageAvailableListener")
+                        if (retryCount < MAX_RETRY_COUNT) {
+                            retryCount++
+                            scheduleScreenshot()
+                        } else {
+                            screenshotCallback?.onError("Failed to acquire image")
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error in image available listener: ${e.message}")
+                    if (retryCount < MAX_RETRY_COUNT) {
+                        retryCount++
+                        scheduleScreenshot()
+                    } else {
+                        screenshotCallback?.onError("Error processing image: ${e.message}")
+                    }
                 }
             }, handler)
             
@@ -137,7 +149,7 @@ class ScreenCaptureManager(
             
             if (mediaProjection == null) {
                 Log.e(TAG, "MediaProjection is null after getMediaProjection")
-                onScreenCaptureErrorListener?.invoke("Failed to start media projection")
+                screenshotCallback?.onError("Failed to start media projection")
                 return
             }
             
@@ -155,7 +167,7 @@ class ScreenCaptureManager(
             
             if (virtualDisplay == null) {
                 Log.e(TAG, "VirtualDisplay is null after createVirtualDisplay")
-                onScreenCaptureErrorListener?.invoke("Failed to create virtual display")
+                screenshotCallback?.onError("Failed to create virtual display")
                 return
             }
             
@@ -165,12 +177,12 @@ class ScreenCaptureManager(
             retryCount = 0
             
             // Schedule screenshot after a short delay
-            scheduleScreenshot(500) // Reduced delay for faster capture
+            scheduleScreenshot(500) // Short delay for faster capture
             
         } catch (e: Exception) {
             Log.e(TAG, "Error starting screen capture: ${e.message}")
             e.printStackTrace()
-            onScreenCaptureErrorListener?.invoke("Failed to start screen capture: ${e.message}")
+            screenshotCallback?.onError("Failed to start screen capture: ${e.message}")
         }
     }
     
@@ -200,7 +212,7 @@ class ScreenCaptureManager(
             val image = imageReader.acquireLatestImage()
             
             if (image != null) {
-                handleImageCaptured(image)
+                processImageDirectly(image)
             } else {
                 Log.e(TAG, "Failed to acquire image from ImageReader")
                 
@@ -214,7 +226,7 @@ class ScreenCaptureManager(
                     }, 500)
                 } else {
                     Log.w(TAG, "Maximum retries reached, creating fallback image")
-                    createFallbackScreenshot()
+                    createFallbackImage()
                 }
             }
         } catch (e: Exception) {
@@ -229,104 +241,59 @@ class ScreenCaptureManager(
                 }, 500)
             } else {
                 Log.w(TAG, "Maximum retries reached after error, creating fallback image")
-                createFallbackScreenshot()
+                createFallbackImage()
             }
         }
     }
     
     /**
-     * Process the captured image
+     * Process the captured image directly without saving to disk
      */
-    private fun handleImageCaptured(image: Image) {
+    private fun processImageDirectly(image: Image) {
         imageCaptured = true
         Log.d(TAG, "Image acquired: width=${image.width}, height=${image.height}, format=${image.format}")
         
-        // Save the image to a file
-        val screenshotFile = saveImage(image)
-        image.close()
-        
-        if (screenshotFile != null) {
-            // Successfully saved the screenshot
-            Log.d(TAG, "Screenshot saved to: ${screenshotFile.absolutePath}, size=${screenshotFile.length()} bytes")
+        try {
+            val bitmap = imageToBitmap(image)
+            image.close()
             
-            if (screenshotFile.length() > 0) {
-                // Only notify for the first successful screenshot to prevent multiple analyses
-                if (capturedImageCount.get() == 1) {
-                    // Notify listener that screenshot was captured
-                    onScreenCapturedListener?.invoke(screenshotFile.absolutePath, screenshotFile)
-                }
+            if (bitmap != null) {
+                // Process the bitmap directly
+                Log.d(TAG, "Successfully converted image to bitmap: width=${bitmap.width}, height=${bitmap.height}")
+                screenshotCallback?.onScreenshotCaptured(bitmap)
             } else {
-                Log.e(TAG, "Screenshot file is empty (0 bytes)")
+                Log.e(TAG, "Failed to convert image to bitmap")
                 if (retryCount < MAX_RETRY_COUNT) {
                     retryCount++
                     handler.postDelayed({
-                        Log.d(TAG, "Trying to capture screenshot again after empty file")
+                        Log.d(TAG, "Retrying screenshot capture after bitmap conversion failure")
                         captureScreenshot()
                     }, 500)
                 } else {
-                    createFallbackScreenshot()
+                    createFallbackImage()
                 }
             }
-        } else {
-            Log.e(TAG, "Failed to save screenshot")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing image: ${e.message}")
+            image.close()
             
             if (retryCount < MAX_RETRY_COUNT) {
                 retryCount++
                 handler.postDelayed({
-                    Log.d(TAG, "Trying to capture screenshot again after save error")
+                    Log.d(TAG, "Retrying after processing error")
                     captureScreenshot()
                 }, 500)
             } else {
-                createFallbackScreenshot()
+                createFallbackImage()
             }
         }
     }
     
     /**
-     * Create a fallback screenshot (blank image) when screen capture fails
+     * Convert Image to Bitmap
      */
-    private fun createFallbackScreenshot() {
+    private fun imageToBitmap(image: Image): Bitmap? {
         try {
-            Log.d(TAG, "Creating fallback screenshot")
-            
-            // Create a blank bitmap with device dimensions
-            val bitmap = Bitmap.createBitmap(imageWidth, imageHeight, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            
-            // Fill with light gray background
-            canvas.drawColor(Color.LTGRAY)
-            
-            // Create file with timestamp
-            val timestamp = System.currentTimeMillis()
-            val file = File(
-                context.getExternalFilesDir(Environment.DIRECTORY_PICTURES),
-                "fallback_screenshot_$timestamp.png"
-            )
-            
-            // Save bitmap to file
-            FileOutputStream(file).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                out.flush()
-            }
-            
-            Log.d(TAG, "Fallback screenshot saved: ${file.absolutePath}, size=${file.length()} bytes")
-            
-            // Notify listener with fallback image
-            onScreenCapturedListener?.invoke(file.absolutePath, file)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error creating fallback screenshot: ${e.message}")
-            onScreenCaptureErrorListener?.invoke("Failed to create fallback screenshot: ${e.message}")
-        }
-    }
-    
-    /**
-     * Save the captured image to a file
-     */
-    private fun saveImage(image: Image): File? {
-        try {
-            Log.d(TAG, "Saving captured image")
-            
             if (image.planes.isEmpty()) {
                 Log.e(TAG, "Image has no planes")
                 return null
@@ -350,28 +317,36 @@ class ScreenCaptureManager(
             )
             bitmap.copyPixelsFromBuffer(buffer)
             
-            Log.d(TAG, "Bitmap created: width=${bitmap.width}, height=${bitmap.height}")
-            
-            // Create file with timestamp to avoid overwriting
-            val timestamp = System.currentTimeMillis()
-            val file = File(
-                context.getExternalFilesDir(Environment.DIRECTORY_PICTURES), 
-                "screenshot_$timestamp.png"
-            )
-            
-            // Save bitmap to file
-            FileOutputStream(file).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                out.flush()
-            }
-            
-            Log.d(TAG, "Screenshot saved: ${file.absolutePath}, size=${file.length()} bytes")
-            
-            return file
+            return bitmap
         } catch (e: Exception) {
-            Log.e(TAG, "Error saving image: ${e.message}")
+            Log.e(TAG, "Error converting image to bitmap: ${e.message}")
             e.printStackTrace()
             return null
+        }
+    }
+    
+    /**
+     * Create a blank image when screen capture fails
+     */
+    private fun createFallbackImage() {
+        try {
+            Log.d(TAG, "Creating fallback image")
+            
+            // Create a blank bitmap with device dimensions
+            val bitmap = createBitmap(imageWidth, imageHeight)
+            val canvas = Canvas(bitmap)
+            
+            // Fill with light gray background
+            canvas.drawColor(Color.LTGRAY)
+            
+            Log.d(TAG, "Fallback image created")
+            
+            // Process the fallback bitmap
+            screenshotCallback?.onScreenshotCaptured(bitmap)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error creating fallback image: ${e.message}")
+            screenshotCallback?.onError("Failed to create fallback image: ${e.message}")
         }
     }
     
@@ -397,7 +372,6 @@ class ScreenCaptureManager(
      */
     fun release() {
         stopScreenCapture()
-        onScreenCapturedListener = null
-        onScreenCaptureErrorListener = null
+        screenshotCallback = null
     }
 }

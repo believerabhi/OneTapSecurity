@@ -3,20 +3,23 @@ package com.onetap.security
 import android.app.*
 import android.content.Context
 import android.content.Intent
-import android.os.Environment
+import android.graphics.Bitmap
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import android.widget.Toast
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.onetap.security.screencapture.ScreenCaptureManager
-import com.onetap.security.textprocessing.ScreenAnalyzer
+import com.onetap.security.textprocessing.ImageProcessor
 import com.onetap.security.textprocessing.ScreenAnalysisResult
+import com.onetap.security.textprocessing.ScreenAnalyzer
 import com.onetap.security.utils.SecurityPreferences
 import kotlinx.coroutines.*
-import java.io.File
 
-class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
+class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
+    ScreenCaptureManager.ScreenshotCallback {
+
     private val TAG = "ScreenCaptureService"
     private val handler = Handler(Looper.getMainLooper())
 
@@ -26,8 +29,9 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
     // Refactored components
     private lateinit var screenCaptureManager: ScreenCaptureManager
     private lateinit var screenAnalyzer: ScreenAnalyzer
+    private lateinit var imageProcessor: ImageProcessor
 
-    // Flag to prevent multiple simultaneous analyses
+    // Flags to prevent duplicate processing
     private var isAnalyzing = false
     private var isProcessingComplete = false
     private var hasShownNotification = false
@@ -61,36 +65,18 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         // Initialize security preferences
         securityPreferences = SecurityPreferences.getInstance(this)
 
-        // Initialize screen capture manager
-        screenCaptureManager = ScreenCaptureManager(this, handler)
-        screenCaptureManager.initialize()
-
-        // Set up screen capture listener
-        screenCaptureManager.setScreenCaptureListener(
-            onSuccess = { screenshotPath, screenshotFile ->
-                // Only process the first successful screenshot
-                if (!isAnalyzing) {
-                    // Process the captured screenshot
-                    processScreenshot(screenshotPath)
-                }
-            },
-            onError = { errorMessage ->
-                Log.e(TAG, "Screen capture error: $errorMessage")
-                Toast.makeText(this, "Screen capture failed: $errorMessage", Toast.LENGTH_SHORT)
-                    .show()
-
-                // Ensure we notify the floating widget service
-                val finishProcessingIntent =
-                    Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-                androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
-                    .sendBroadcast(finishProcessingIntent)
-
-                stopSelf()
-            }
-        )
+        // Initialize ImageProcessor
+        imageProcessor = ImageProcessor()
 
         // Initialize screen analyzer
         screenAnalyzer = ScreenAnalyzer(this)
+
+        // Initialize screen capture manager
+        screenCaptureManager = ScreenCaptureManager(this, handler, this)
+        screenCaptureManager.initialize()
+
+        // Set callback for direct bitmap processing
+        screenCaptureManager.setScreenshotCallback(this)
 
         // Create notification channel first
         createNotificationChannel()
@@ -106,13 +92,14 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         val chan = NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_LOW)
         manager.createNotificationChannel(chan)
     }
-    
+
     private fun createNotification(): Notification {
         val channelId = "screencapture"
 
-        // Create a pending intent that goes to MainActivity instead of ProjectionPermissionActivity
+        // Create a pending intent that goes to MainActivity
         val tapIntent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(this, 0, tapIntent, PendingIntent.FLAG_IMMUTABLE)
+        val pendingIntent =
+            PendingIntent.getActivity(this, 0, tapIntent, PendingIntent.FLAG_IMMUTABLE)
 
         return Notification.Builder(this, channelId)
             .setContentTitle(getString(R.string.notification_running))
@@ -127,126 +114,87 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand called")
 
-        // Make sure we're starting with required projection data
-        if (intent == null || !intent.hasExtra("resultCode") || !intent.hasExtra("data")) {
-            Log.e(TAG, "Missing required projection data")
-            
-            // Send finish broadcast to update the widget UI
-            val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-            androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
-                .sendBroadcast(finishProcessingIntent)
-                
-            Toast.makeText(this, "Missing projection data. Try restarting the app.", Toast.LENGTH_LONG).show()
+        // Validate intent and projection data
+        val resultCode = intent?.getIntExtra("resultCode", Activity.RESULT_CANCELED)
+        val resultData = intent?.getParcelableExtra<Intent>("data")
+
+        if (resultCode == null || resultData == null) {
+            Log.e(TAG, "Missing or invalid projection data")
+
+            // Reset stored permissions
+            ProjectionStore.reset()
+
+            // Notify UI and user
+            sendLocalBroadcast(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+            Toast.makeText(this, "Missing or invalid projection data. Try restarting the app.", Toast.LENGTH_LONG).show()
+
             stopSelf()
             return START_NOT_STICKY
         }
 
-        try {
-            val resultCode = intent.getIntExtra("resultCode", Activity.RESULT_CANCELED)
-            val resultData = intent.getParcelableExtra<Intent>("data") 
-            if (resultData == null) {
-                Log.e(TAG, "resultData is null, cannot start screen capture")
-                
-                // Reset the permission store as it might be corrupted
-                ProjectionStore.reset()
-                
-                // Send finish broadcast to update the widget UI
-                val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-                androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
-                    .sendBroadcast(finishProcessingIntent)
-                    
-                Toast.makeText(this, "Media projection data is invalid. Try restarting the app.", Toast.LENGTH_LONG).show()
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            
-            Log.d(TAG, "Starting capture with resultCode=$resultCode and data present")
+        return try {
+            Log.d(TAG, "Starting capture with resultCode=$resultCode and valid data")
+
+            // Reset internal state
+            isAnalyzing = false
+            isProcessingComplete = false
+            hasShownNotification = false
+
+            // Notify processing start
+            sendLocalBroadcast(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_STARTED)
+            Log.d(TAG, "Sent broadcast: Screenshot processing started")
 
             // Start screen capture
             screenCaptureManager.startScreenCapture(resultCode, resultData)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in onStartCommand: ${e.message}")
-            e.printStackTrace()
-            
-            // Reset the permission store as it might be corrupted
-            ProjectionStore.reset()
-            
-            // Send finish broadcast to update the widget UI
-            val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-            androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
-                .sendBroadcast(finishProcessingIntent)
-                
-            Toast.makeText(this, "Error starting screen capture: ${e.message}", Toast.LENGTH_LONG).show()
-            stopSelf()
-            return START_NOT_STICKY
-        }
 
-        return START_STICKY
-    }
-    
-    /**
-     * Process the captured screenshot using the ScreenAnalyzer
-     */
-    private fun processScreenshot(screenshotPath: String) {
-        // Check if security feature is enabled
-        if (!securityPreferences.isSecurityEnabled()) {
-            Log.d(TAG, "Security monitoring is disabled, ignoring screenshot")
-            
-            // Notify that processing has finished with error (important to update floating widget)
-            val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-            androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
-                .sendBroadcast(finishProcessingIntent)
-                
+            START_STICKY
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting screen capture: ${e.message}", e)
+
+            // Reset permissions and notify UI
+            ProjectionStore.reset()
+            sendLocalBroadcast(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+            Toast.makeText(this, "Error starting screen capture: ${e.message}", Toast.LENGTH_LONG).show()
+
             stopSelf()
+            START_NOT_STICKY
+        }
+    }
+
+    // Helper function to send local broadcasts
+    private fun sendLocalBroadcast(action: String) {
+        val intent = Intent(action)
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+
+
+    /**
+     * Callback when screenshot is captured - direct bitmap processing
+     */
+    override fun onScreenshotCaptured(bitmap: Bitmap) {
+        // Don't process if already analyzing or disabled
+        if (isAnalyzing || !securityPreferences.isSecurityEnabled() || isProcessingComplete) {
             return
         }
 
-        // Set analyzing flag to prevent multiple simultaneous analyses
         isAnalyzing = true
 
         launch(Dispatchers.Main) {
             try {
-                // Notify that processing has started (send broadcast to FloatingWidgetService)
-                val startProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_STARTED)
-                androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this@ScreenCaptureService)
-                    .sendBroadcast(startProcessingIntent)
-                Log.d(TAG, "Sent broadcast: Screenshot processing started")
-                
                 // Show processing notification
                 val processingNotification = createProcessingNotification()
-                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                val notificationManager =
+                    getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.notify(2, processingNotification)
-                
+
                 var result: ScreenAnalysisResult? = null
                 var analysisError: Exception? = null
-                
-                // First, check if a screenshot was actually captured - before even trying to analyze it
-                val file = File(screenshotPath)
-                if (!file.exists() || file.length().toInt() == 0) {
-                    showResultNotification(
-                        "Screenshot Error", 
-                        "Unable to capture screenshot. The app might not have proper permissions on this device.",
-                        null
-                    )
-                    
-                    // Always notify that processing has finished, even on error
-                    val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-                    androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this@ScreenCaptureService)
-                        .sendBroadcast(finishProcessingIntent)
-                    
-                    stopSelf()
-                    return@launch
-                }
 
-                // Clean up old screenshots
-                cleanupOldScreenshots(getExternalFilesDir(Environment.DIRECTORY_PICTURES))
-
-                // Process the screenshot in the background with timeout protection
+                // Process the bitmap directly
                 try {
                     withTimeout(15000) { // 15 second timeout
                         result = withContext(Dispatchers.Default) {
-                            screenAnalyzer.analyzeScreenshot(screenshotPath)
+                            screenAnalyzer.analyzeBitmap(bitmap)
                         }
                     }
                 } catch (e: TimeoutCancellationException) {
@@ -271,17 +219,17 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
                     )
                 }
 
-                // Always notify that processing has finished, even on error
+                // Always notify that processing has finished
                 val finishProcessingIntent =
                     Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
                 androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this@ScreenCaptureService)
                     .sendBroadcast(finishProcessingIntent)
                 Log.d(TAG, "Sent broadcast: Screenshot processing finished")
-                
+
             } catch (e: Exception) {
-                Log.e(TAG, "Error processing screenshot: ${e.message}")
+                Log.e(TAG, "Error processing bitmap: ${e.message}")
                 e.printStackTrace()
-                
+
                 // Show error notification
                 if (!hasShownNotification) {
                     hasShownNotification = true
@@ -300,39 +248,40 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
 
                 // Stop the service
                 stopSelf()
+            } finally {
+                // Make sure the bitmap is recycled to free memory
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
             }
         }
     }
 
     /**
-     * Clean up old screenshot files to prevent filling up storage
+     * Handle error in screenshot capture
      */
-    private fun cleanupOldScreenshots(directory: File?) {
-        if (directory == null || !directory.exists() || !directory.isDirectory) return
+    override fun onError(errorMessage: String) {
+        Log.e(TAG, "Screenshot capture error: $errorMessage")
 
-        try {
-            val files = directory.listFiles() ?: return
+        // Show error toast and notification
+        Toast.makeText(this, "Screenshot capture failed: $errorMessage", Toast.LENGTH_SHORT).show()
 
-            // Keep only the 10 most recent files
-            if (files.size > 10) {
-                val sortedFiles = files.filter { it.name.startsWith("screenshot_") }
-                    .sortedByDescending { it.lastModified() }
-
-                // Delete all but the 10 most recent
-                sortedFiles.drop(10).forEach { file ->
-                    if (file.exists() && file.isFile) {
-                        val deleted = file.delete()
-                        if (deleted) {
-                            Log.d(TAG, "Deleted old screenshot: ${file.name}")
-                        } else {
-                            Log.e(TAG, "Failed to delete old screenshot: ${file.name}")
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error cleaning up old screenshots: ${e.message}")
+        if (!hasShownNotification) {
+            hasShownNotification = true
+            showResultNotification(
+                "Screenshot Error",
+                "Failed to capture screenshot: $errorMessage",
+                null
+            )
         }
+
+        // Notify that processing has finished with error
+        val finishProcessingIntent =
+            Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+        androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
+            .sendBroadcast(finishProcessingIntent)
+
+        stopSelf()
     }
 
     /**
@@ -382,9 +331,6 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
                             result.extractedText.fullText
                         )
 
-                        // Here you could save the analysis results to a database
-                        // or perform other actions like sending alerts
-
                         Log.d(TAG, "Security risks: $securityRisks")
                         Log.d(TAG, "Sensitive info: $sensitiveInfo")
                     } else {
@@ -404,14 +350,14 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
                 // Analysis failed
                 fallbackResultHandling(result)
             }
-            
+
             // Give time for notification to be seen, then stop service
             handler.postDelayed({
                 stopSelf()
             }, 5000)
         }
     }
-    
+
     /**
      * Fallback handling for when AI enhancement fails
      */
@@ -419,20 +365,20 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         if (result.success && result.securityAnalysis != null) {
             val securityRisks = result.securityAnalysis.securityRisks
             val sensitiveInfo = result.securityAnalysis.sensitiveInformation
-            
+
             if (securityRisks.isNotEmpty() || sensitiveInfo.isNotEmpty()) {
                 val risksText = if (securityRisks.isNotEmpty()) {
                     "${securityRisks.size} security risks found"
                 } else {
                     "No security risks found"
                 }
-                
+
                 val sensitiveText = if (sensitiveInfo.isNotEmpty()) {
                     "${sensitiveInfo.size} pieces of sensitive information detected"
                 } else {
                     "No sensitive information detected"
                 }
-                
+
                 showResultNotification(
                     "Security Alert",
                     "$risksText\n$sensitiveText",
@@ -455,7 +401,7 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
             Log.e(TAG, "Analysis failed: ${result.errorMessage}")
         }
     }
-    
+
     /**
      * Show a notification with the analysis results
      */
@@ -478,11 +424,11 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
                 putExtra("raw_text", it)
             }
         }
-        
+
         val pendingIntent = PendingIntent.getActivity(
             this, 0, resultIntent, PendingIntent.FLAG_IMMUTABLE
         )
-        
+
         val notification = Notification.Builder(this, channelId)
             .setContentTitle(title)
             .setContentText(content)
@@ -491,8 +437,9 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .build()
-        
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        val notificationManager =
+            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(3, notification)
     }
 }

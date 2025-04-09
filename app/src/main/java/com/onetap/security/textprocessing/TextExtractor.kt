@@ -27,52 +27,27 @@ class TextExtractor(private val context: Context) {
     private val textRecognizer: TextRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
     /**
-     * Extract text from an image at the specified path
-     * @param imagePath Path to the image file
+     * Extract text from a bitmap directly
+     * @param bitmap The bitmap to extract text from
      * @return TextExtractionResult containing the extracted text and metadata
      */
-    suspend fun extractTextFromImage(imagePath: String): TextExtractionResult = withContext(Dispatchers.IO) {
+    suspend fun extractTextFromBitmap(bitmap: Bitmap): TextExtractionResult = withContext(Dispatchers.IO) {
         try {
-            Log.d(TAG, "Starting text extraction from image: $imagePath")
+            Log.d(TAG, "Starting text extraction from bitmap: ${bitmap.width}x${bitmap.height}")
             
-            // Check if the file exists and is not empty
-            val file = File(imagePath)
-            if (!file.exists() || file.length().toInt() == 0) {
-                Log.e(TAG, "Image file does not exist or is empty: $imagePath")
+            // Check if the bitmap is valid
+            if (bitmap.width <= 0 || bitmap.height <= 0 || bitmap.isRecycled) {
+                Log.e(TAG, "Invalid bitmap: ${bitmap.width}x${bitmap.height}, recycled=${bitmap.isRecycled}")
                 return@withContext TextExtractionResult(
                     fullText = "",
                     lines = emptyList(),
                     blocks = emptyList(),
-                    imagePath = imagePath,
                     success = false,
-                    errorMessage = "Image file does not exist or is empty"
+                    errorMessage = "Invalid bitmap"
                 )
             }
             
-            // Load and process the image
-            val bitmap = imageProcessor.loadAndProcessImage(imagePath) ?: return@withContext TextExtractionResult(
-                fullText = "",
-                lines = emptyList(),
-                blocks = emptyList(),
-                imagePath = imagePath,
-                success = false,
-                errorMessage = "Failed to load or process the image"
-            )
-            
-            // If the bitmap dimensions are invalid, return error
-            if (bitmap.width <= 0 || bitmap.height <= 0) {
-                Log.e(TAG, "Invalid bitmap dimensions: ${bitmap.width}x${bitmap.height}")
-                return@withContext TextExtractionResult(
-                    fullText = "",
-                    lines = emptyList(),
-                    blocks = emptyList(),
-                    imagePath = imagePath,
-                    success = false,
-                    errorMessage = "Invalid bitmap dimensions"
-                )
-            }
-            
-            // Enhance the image for OCR if needed
+            // Enhance the bitmap for OCR if needed
             val enhancedBitmap = imageProcessor.enhanceImageForOCR(bitmap)
             
             // Create an ML Kit InputImage
@@ -97,7 +72,6 @@ class TextExtractor(private val context: Context) {
                         confidence = 0.0f,
                         boundingBox = BoundingBox(0, 0, 0, 0)
                     )),
-                    imagePath = imagePath,
                     success = false,
                     errorMessage = "Text recognition timed out after 10 seconds"
                 )
@@ -108,7 +82,7 @@ class TextExtractor(private val context: Context) {
             
             // If text extraction fails
             if (visionText.text.isBlank()) {
-                Log.w(TAG, "No text detected in the image")
+                Log.w(TAG, "No text detected in the bitmap")
                 
                 // Return a partial result with a message that no text was detected
                 return@withContext TextExtractionResult(
@@ -119,7 +93,6 @@ class TextExtractor(private val context: Context) {
                         confidence = 0.0f,
                         boundingBox = BoundingBox(0, 0, 0, 0)
                     )),
-                    imagePath = imagePath,
                     success = true,
                     errorMessage = null
                 )
@@ -132,23 +105,21 @@ class TextExtractor(private val context: Context) {
                 block.text.split("\n")
             }
 
-            Log.i(TAG, "visionText: belall : ${visionText.text}")
+            Log.i(TAG, "visionText extracted from bitmap: ${visionText.text}")
+            
             // Build the result
             TextExtractionResult(
                 fullText = visionText.text,
                 lines = lines,
                 blocks = blocks,
-                imagePath = imagePath,
                 success = true
             )
-
         } catch (e: Exception) {
-            Log.e(TAG, "Error extracting text from image: ${e.message}")
+            Log.e(TAG, "Error extracting text from bitmap: ${e.message}")
             TextExtractionResult(
                 fullText = "",
                 lines = emptyList(),
                 blocks = emptyList(),
-                imagePath = imagePath,
                 success = false,
                 errorMessage = "Text extraction failed: ${e.message}"
             )
