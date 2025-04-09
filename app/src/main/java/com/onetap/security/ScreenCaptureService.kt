@@ -1,21 +1,30 @@
 package com.onetap.security
 
-import android.app.*
+import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import android.widget.Toast
-import com.onetap.security.aianalyzer.AIIntegration
-import com.onetap.security.aianalyzer.SecurityVerdict
 import com.onetap.security.screencapture.ScreenCaptureManager
-import com.onetap.security.textprocessing.ScreenAnalyzer
 import com.onetap.security.textprocessing.ScreenAnalysisResult
+import com.onetap.security.textprocessing.ScreenAnalyzer
 import com.onetap.security.utils.SecurityPreferences
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
 
 class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
@@ -28,7 +37,6 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
     // Refactored components
     private lateinit var screenCaptureManager: ScreenCaptureManager
     private lateinit var screenAnalyzer: ScreenAnalyzer
-    private lateinit var aiIntegration: AIIntegration
 
     override fun onDestroy() {
         super.onDestroy()
@@ -40,9 +48,6 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         }
         if (::screenAnalyzer.isInitialized) {
             screenAnalyzer.close()
-        }
-        if (::aiIntegration.isInitialized) {
-            aiIntegration.close()
         }
         
         // Cancel all coroutines when service is destroyed
@@ -57,7 +62,7 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         securityPreferences = SecurityPreferences.getInstance(this)
         
         // Initialize screen capture manager
-        screenCaptureManager = ScreenCaptureManager(this, handler, this)
+        screenCaptureManager = ScreenCaptureManager(this, handler)
         screenCaptureManager.initialize()
         
         // Set up screen capture listener
@@ -75,20 +80,7 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         
         // Initialize screen analyzer
         screenAnalyzer = ScreenAnalyzer(this)
-        
-        // Initialize AI integration
-        aiIntegration = AIIntegration(this)
-        
-        // Initialize AI in background
-        launch {
-            try {
-                aiIntegration.initialize()
-                Log.d(TAG, "AI Integration initialized successfully")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error initializing AI: ${e.message}")
-            }
-        }
-        
+
         // Create notification channel first
         createNotificationChannel()
         
@@ -107,12 +99,13 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
     private fun createNotification(): Notification {
         val channelId = "screencapture"
 
-        val tapIntent = Intent(this, ProjectionPermissionActivity::class.java)
+        // Create a pending intent that goes to MainActivity instead of ProjectionPermissionActivity
+        val tapIntent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(this, 0, tapIntent, PendingIntent.FLAG_IMMUTABLE)
 
         return Notification.Builder(this, channelId)
             .setContentTitle(getString(R.string.notification_running))
-            .setContentText(getString(R.string.notification_tap_capture))
+            .setContentText(getString(R.string.notification_analyzing))
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(pendingIntent)
             .build()
@@ -126,13 +119,37 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         // Make sure we're starting with required projection data
         if (intent == null || !intent.hasExtra("resultCode") || !intent.hasExtra("data")) {
             Log.e(TAG, "Missing required projection data")
+            
+            // Send finish broadcast to update the widget UI
+            val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+            androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
+                .sendBroadcast(finishProcessingIntent)
+                
+            Toast.makeText(this, "Missing projection data. Try restarting the app.", Toast.LENGTH_LONG).show()
             stopSelf()
             return START_NOT_STICKY
         }
 
         try {
             val resultCode = intent.getIntExtra("resultCode", Activity.RESULT_CANCELED)
-            val resultData = intent.getParcelableExtra<Intent>("data") ?: return START_NOT_STICKY
+            val resultData = intent.getParcelableExtra<Intent>("data") 
+            if (resultData == null) {
+                Log.e(TAG, "resultData is null, cannot start screen capture")
+                
+                // Reset the permission store as it might be corrupted
+                ProjectionStore.reset()
+                
+                // Send finish broadcast to update the widget UI
+                val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+                androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
+                    .sendBroadcast(finishProcessingIntent)
+                    
+                Toast.makeText(this, "Media projection data is invalid. Try restarting the app.", Toast.LENGTH_LONG).show()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            
+            Log.d(TAG, "Starting capture with resultCode=$resultCode and data present")
 
             // Start screen capture
             screenCaptureManager.startScreenCapture(resultCode, resultData)
@@ -140,6 +157,16 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         } catch (e: Exception) {
             Log.e(TAG, "Error in onStartCommand: ${e.message}")
             e.printStackTrace()
+            
+            // Reset the permission store as it might be corrupted
+            ProjectionStore.reset()
+            
+            // Send finish broadcast to update the widget UI
+            val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+            androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
+                .sendBroadcast(finishProcessingIntent)
+                
+            Toast.makeText(this, "Error starting screen capture: ${e.message}", Toast.LENGTH_LONG).show()
             stopSelf()
             return START_NOT_STICKY
         }
@@ -154,6 +181,12 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
         // Check if security feature is enabled
         if (!securityPreferences.isSecurityEnabled()) {
             Log.d(TAG, "Security monitoring is disabled, ignoring screenshot")
+            
+            // Notify that processing has finished with error (important to update floating widget)
+            val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+            androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
+                .sendBroadcast(finishProcessingIntent)
+                
             stopSelf()
             return
         }
@@ -170,15 +203,55 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.notify(2, processingNotification)
                 
-                // Process the screenshot in the background
-                val result = withContext(Dispatchers.Default) {
-                    screenAnalyzer.analyzeScreenshot(screenshotPath)
+                var result: ScreenAnalysisResult? = null
+                var analysisError: Exception? = null
+                
+                // First, check if a screenshot was actually captured - before even trying to analyze it
+                val file = File(screenshotPath)
+                if (!file.exists() || file.length().toInt() == 0) {
+                    showResultNotification(
+                        "Screenshot Error", 
+                        "Unable to capture screenshot. The app might not have proper permissions on this device.",
+                        null
+                    )
+                    
+                    // Always notify that processing has finished, even on error
+                    val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+                    androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this@ScreenCaptureService)
+                        .sendBroadcast(finishProcessingIntent)
+                    
+                    stopSelf()
+                    return@launch
                 }
                 
-                // Handle the results
-                handleScreenAnalysisResult(result, screenshotPath)
+                // Process the screenshot in the background with timeout protection
+                try {
+                    withTimeout(15000) { // 15 second timeout
+                        result = withContext(Dispatchers.Default) {
+                            screenAnalyzer.analyzeScreenshot(screenshotPath)
+                        }
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    analysisError = Exception("Analysis timed out after 10 seconds")
+                    Log.e(TAG, "Analysis timed out after 10 seconds")
+                } catch (e: Exception) {
+                    analysisError = e
+                    Log.e(TAG, "Error in text analysis: ${e.message}")
+                }
                 
-                // Notify that processing has finished
+                if (result != null) {
+                    // Handle the results
+                    handleScreenAnalysisResult(result!!, screenshotPath)
+                } else {
+                    // Handle the error case
+                    showResultNotification(
+                        "Analysis Error", 
+                        "Unable to analyze the screenshot: ${analysisError?.message ?: "Unknown error"}",
+                        null
+                    )
+                }
+                
+                // Always notify that processing has finished, even on error
                 val finishProcessingIntent = Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
                 androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this@ScreenCaptureService)
                     .sendBroadcast(finishProcessingIntent)
@@ -226,21 +299,25 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
             if (result.success && result.securityAnalysis != null && result.extractedText != null) {
                 try {
                     // Enhance analysis with AI if possible
-                    val enhancedResult = if (::aiIntegration.isInitialized) {
-                        withContext(Dispatchers.Default) {
-                            try {
-                                aiIntegration.enhanceAnalysis(
-                                    result.extractedText,
-                                    result.securityAnalysis
-                                )
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error in AI analysis: ${e.message}")
-                                null
-                            }
-                        }
-                    } else null
+                    val enhancedResult =
+//                        if (::aiIntegration.isInitialized) {
+//                        withContext(Dispatchers.Default) {
+//                            try {
+//                                aiIntegration.enhanceAnalysis(
+//                                    result.extractedText,
+//                                    result.securityAnalysis
+//                                )
+//                            } catch (e: Exception) {
+//                                Log.e(TAG, "Error in AI analysis: ${e.message}")
+//                                null
+//                            }
+//                        }
+//                    } else
+                        null
                     
-                    val securityRisks = enhancedResult?.mergedRisks ?: result.securityAnalysis.securityRisks
+                    val securityRisks =
+//                       enhancedResult?.mergedRisks ?:
+                        result.securityAnalysis.securityRisks
                     val sensitiveInfo = result.securityAnalysis.sensitiveInformation
                     
                     // Determine notification based on verdict or risk level
@@ -259,17 +336,18 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
                         }
                         
                         // If we have an AI verdict, include it
-                        val verdictText = if (enhancedResult != null) {
-                            when (enhancedResult.securityVerdict) {
-                                SecurityVerdict.DANGEROUS -> "\n\nVERDICT: DANGEROUS - Take immediate action"
-                                SecurityVerdict.HIGH_RISK -> "\n\nVERDICT: HIGH RISK - Be very cautious"
-                                SecurityVerdict.SUSPICIOUS -> "\n\nVERDICT: SUSPICIOUS - Exercise caution"
-                                SecurityVerdict.CONTAINS_SENSITIVE_INFO -> "\n\nVERDICT: CONTAINS SENSITIVE INFO"
-                                SecurityVerdict.LOW_RISK -> "\n\nVERDICT: LOW RISK"
-                                SecurityVerdict.SAFE -> "\n\nVERDICT: SAFE"
-                                else -> ""
-                            }
-                        } else ""
+                        val verdictText = ""
+//                            if (enhancedResult != null) {
+//                            when (enhancedResult.securityVerdict) {
+//                                SecurityVerdict.DANGEROUS -> "\n\nVERDICT: DANGEROUS - Take immediate action"
+//                                SecurityVerdict.HIGH_RISK -> "\n\nVERDICT: HIGH RISK - Be very cautious"
+//                                SecurityVerdict.SUSPICIOUS -> "\n\nVERDICT: SUSPICIOUS - Exercise caution"
+//                                SecurityVerdict.CONTAINS_SENSITIVE_INFO -> "\n\nVERDICT: CONTAINS SENSITIVE INFO"
+//                                SecurityVerdict.LOW_RISK -> "\n\nVERDICT: LOW RISK"
+//                                SecurityVerdict.SAFE -> "\n\nVERDICT: SAFE"
+//                                else -> ""
+//                            }
+//                        } else ""
                         
                         showResultNotification(
                             "Security Alert",
@@ -282,15 +360,16 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope() {
                         
                         Log.d(TAG, "Security risks: $securityRisks")
                         Log.d(TAG, "Sensitive info: $sensitiveInfo")
-                        if (enhancedResult != null) {
-                            Log.d(TAG, "AI Verdict: ${enhancedResult.securityVerdict}")
-                        }
+//                        if (enhancedResult != null) {
+//                            Log.d(TAG, "AI Verdict: ${enhancedResult.securityVerdict}")
+//                        }
                     } else {
                         // No security risks or sensitive information detected
                         showResultNotification(
                             "Screen Analyzed",
                             "No security risks or sensitive information detected" +
-                            if (enhancedResult?.securityVerdict == SecurityVerdict.SAFE) " (AI Verified)" else "",
+//                            if (enhancedResult?.securityVerdict == SecurityVerdict.SAFE) " (AI Verified)" else
+                                "",
                             result.extractedText.fullText
                         )
                         Log.d(TAG, "No security risks or sensitive information detected")

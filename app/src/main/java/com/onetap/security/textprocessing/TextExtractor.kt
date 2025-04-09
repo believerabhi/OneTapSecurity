@@ -10,8 +10,11 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import java.io.File
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -32,6 +35,20 @@ class TextExtractor(private val context: Context) {
         try {
             Log.d(TAG, "Starting text extraction from image: $imagePath")
             
+            // Check if the file exists and is not empty
+            val file = File(imagePath)
+            if (!file.exists() || file.length().toInt() == 0) {
+                Log.e(TAG, "Image file does not exist or is empty: $imagePath")
+                return@withContext TextExtractionResult(
+                    fullText = "",
+                    lines = emptyList(),
+                    blocks = emptyList(),
+                    imagePath = imagePath,
+                    success = false,
+                    errorMessage = "Image file does not exist or is empty"
+                )
+            }
+            
             // Load and process the image
             val bitmap = imageProcessor.loadAndProcessImage(imagePath) ?: return@withContext TextExtractionResult(
                 fullText = "",
@@ -42,14 +59,71 @@ class TextExtractor(private val context: Context) {
                 errorMessage = "Failed to load or process the image"
             )
             
+            // If the bitmap dimensions are invalid, return error
+            if (bitmap.width <= 0 || bitmap.height <= 0) {
+                Log.e(TAG, "Invalid bitmap dimensions: ${bitmap.width}x${bitmap.height}")
+                return@withContext TextExtractionResult(
+                    fullText = "",
+                    lines = emptyList(),
+                    blocks = emptyList(),
+                    imagePath = imagePath,
+                    success = false,
+                    errorMessage = "Invalid bitmap dimensions"
+                )
+            }
+            
             // Enhance the image for OCR if needed
             val enhancedBitmap = imageProcessor.enhanceImageForOCR(bitmap)
             
             // Create an ML Kit InputImage
             val inputImage = InputImage.fromBitmap(enhancedBitmap, 0)
             
-            // Perform text recognition
-            val visionText = recognizeText(inputImage)
+            var visionText: Text
+            
+            try {
+                // Perform text recognition with timeout
+                visionText = withTimeout(10000) {
+                    recognizeText(inputImage)
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.e(TAG, "Text recognition timed out after 10 seconds")
+                
+                // Return a partial result
+                return@withContext TextExtractionResult(
+                    fullText = "Text recognition timed out. Please try again.",
+                    lines = listOf("Text recognition timed out"),
+                    blocks = listOf(TextBlock(
+                        text = "Text recognition timed out",
+                        confidence = 0.0f,
+                        boundingBox = BoundingBox(0, 0, 0, 0)
+                    )),
+                    imagePath = imagePath,
+                    success = false,
+                    errorMessage = "Text recognition timed out after 10 seconds"
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Error recognizing text: ${e.message}")
+                throw e
+            }
+            
+            // If text extraction fails
+            if (visionText.text.isBlank()) {
+                Log.w(TAG, "No text detected in the image")
+                
+                // Return a partial result with a message that no text was detected
+                return@withContext TextExtractionResult(
+                    fullText = "No text detected in the image.",
+                    lines = listOf("No text detected"),
+                    blocks = listOf(TextBlock(
+                        text = "No text detected",
+                        confidence = 0.0f,
+                        boundingBox = BoundingBox(0, 0, 0, 0)
+                    )),
+                    imagePath = imagePath,
+                    success = true,
+                    errorMessage = null
+                )
+            }
             
             // Process the results
             val blocks = processTextBlocks(visionText)

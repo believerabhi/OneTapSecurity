@@ -13,7 +13,7 @@ import java.io.File
 class ScreenAnalyzer(private val context: Context) {
     private val TAG = "ScreenAnalyzer"
     private val textExtractor = TextExtractor(context)
-    private val textProcessor = TextProcessor()
+    private val textProcessor = TextProcessor(context)
 
     /**
      * Analyze a screenshot from the given file path
@@ -51,15 +51,33 @@ class ScreenAnalyzer(private val context: Context) {
                 )
             }
             
-            // Process the extracted text
-            val processedResult = textProcessor.analyzeText(extractionResult)
-            
-            // Return the complete analysis result
-            ScreenAnalysisResult(
-                success = true,
-                extractedText = extractionResult,
-                securityAnalysis = processedResult
-            )
+            // Process the extracted text - with error handling
+            try {
+                val processedResult = textProcessor.analyzeText(extractionResult)
+                
+                // Return the complete analysis result
+                ScreenAnalysisResult(
+                    success = true,
+                    extractedText = extractionResult,
+                    securityAnalysis = processedResult
+                )
+            } catch (textProcessingException: Exception) {
+                Log.e(TAG, "Error in text processing: ${textProcessingException.message}")
+                textProcessingException.printStackTrace()
+                
+                // Return partial result with the extracted text but no security analysis
+                ScreenAnalysisResult(
+                    success = false,
+                    errorMessage = "Error analyzing text: ${textProcessingException.message}",
+                    extractedText = extractionResult,
+                    securityAnalysis = ProcessedTextResult(
+                        originalText = extractionResult.fullText,
+                        securityRisks = emptyList(),
+                        sensitiveInformation = emptyList(),
+                        analysisSuccessful = false
+                    )
+                )
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error analyzing screenshot: ${e.message}")
             e.printStackTrace()

@@ -18,6 +18,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.ProgressBar
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import kotlin.math.abs
@@ -31,6 +32,7 @@ class FloatingWidgetService : Service() {
     private var initialTouchX = 0f
     private var initialTouchY = 0f
     private var lastClickTime = 0L
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
     companion object {
         private const val NOTIFICATION_CHANNEL_ID = "FloatingWidgetChannel"
@@ -66,6 +68,7 @@ class FloatingWidgetService : Service() {
     @SuppressLint("ClickableViewAccessibility", "InflateParams")
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "FloatingWidgetService onCreate called")
 
         // Start as a foreground service
         startForeground()
@@ -116,15 +119,46 @@ class FloatingWidgetService : Service() {
                             abs(event.rawY - initialTouchY) > 10
 
                     if (!moved && touchDuration < CLICK_TIME_THRESHOLD) {
-                        // Launch ProjectionPermissionActivity to request screen capture permission
-                        if (ProjectionStore.resultCode != -1 && ProjectionStore.resultData != null) {
+                        Log.d(TAG, "Widget clicked - Permission status: hasValidPermission=${ProjectionStore.hasValidPermission()}, resultCode=${ProjectionStore.resultCode}, data=${ProjectionStore.resultData != null}")
+                        
+                        // Check if we have projection permission
+                        if (ProjectionStore.hasValidPermission()) {
+                            Log.d(TAG, "Using stored projection permission for screen capture")
+                            
+                            // Show a toast indicating that screenshot is being taken
+                            Toast.makeText(
+                                this@FloatingWidgetService,
+                                "Taking screenshot for analysis...",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            
+                            // Start the screen capture service with the stored permission data
                             val captureIntent = Intent(this@FloatingWidgetService, ScreenCaptureService::class.java).apply {
                                 putExtra("resultCode", ProjectionStore.resultCode)
                                 putExtra("data", ProjectionStore.resultData)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             }
                             startForegroundService(captureIntent)
+                            
+                            // Show loading indicator
+                            showLoadingIndicator()
+                            
+                            // Set a timeout to hide the loading indicator if the broadcast is never received
+                            handler.postDelayed({
+                                hideLoadingIndicator()
+                            }, 20000) // 20 seconds timeout
                         } else {
-                            // Permission not yet granted — launch ProjectionPermissionActivity
+                            // We need to get permission first - clear any existing data
+                            Log.d(TAG, "No valid projection permission found, requesting now")
+                            ProjectionStore.reset() // Clear any potentially corrupt data
+                            
+                            Toast.makeText(
+                                this@FloatingWidgetService,
+                                "Screenshot permission required",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            
+                            // Launch projection permission activity
                             val intent = Intent(this@FloatingWidgetService, ProjectionPermissionActivity::class.java).apply {
                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             }
@@ -147,6 +181,15 @@ class FloatingWidgetService : Service() {
             addAction(ACTION_SCREENSHOT_PROCESSING_FINISHED)
         }
         LocalBroadcastManager.getInstance(this).registerReceiver(screenshotProcessingReceiver, intentFilter)
+        
+        // Go to the home screen to put the app in the background after a delay
+        handler.postDelayed({
+            Log.d(TAG, "Moving app to background")
+            val homeIntent = Intent(Intent.ACTION_MAIN)
+            homeIntent.addCategory(Intent.CATEGORY_HOME)
+            homeIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            startActivity(homeIntent)
+        }, 1000) // Delay to ensure widget is properly displayed
     }
     
     private fun showLoadingIndicator() {

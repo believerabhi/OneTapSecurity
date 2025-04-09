@@ -1,12 +1,14 @@
 package com.onetap.security.textprocessing
 
+import android.content.Context
 import android.util.Log
+import com.onetap.security.aianalyzer.CustomTFLiteClassifier
 import java.util.regex.Pattern
 
 /**
  * Class responsible for processing and analyzing extracted text
  */
-class TextProcessor {
+class TextProcessor(private val context: Context) {
     private val TAG = "TextProcessor"
 
     /**
@@ -31,7 +33,30 @@ class TextProcessor {
         
         // Find sensitive information
         val sensitiveInfo = findSensitiveInformation(extractionResult.fullText, extractionResult.lines)
-        
+        // Try to classify with TFLite model, but handle errors gracefully
+        try {
+            val classifier = CustomTFLiteClassifier(context)
+            if (classifier.isInitialized()) {
+                val prediction = classifier.classifyText(extractionResult.fullText)
+                Log.d(TAG, "Custom TFLite classification result: $prediction")
+                
+                if (prediction != "safe") {
+                    securityRisks.add(
+                        SecurityRisk(
+                            type = SecurityRiskType.KNOWN_PHISHING,
+                            description = "TFLite model detected: $prediction",
+                            severity = RiskSeverity.HIGH
+                        )
+                    )
+                }
+            } else {
+                Log.w(TAG, "TFLite classifier not initialized, skipping classification")
+            }
+            classifier.close()
+        } catch (e: Exception) {
+            // Don't let TFLite errors break the entire analysis
+            Log.e(TAG, "Error in TFLite classification: ${e.message}")
+        }
         return ProcessedTextResult(
             originalText = extractionResult.fullText,
             securityRisks = securityRisks,
@@ -43,7 +68,7 @@ class TextProcessor {
     /**
      * Identify potential security risks in the text
      */
-    private fun identifySecurityRisks(text: String): List<SecurityRisk> {
+    private fun identifySecurityRisks(text: String): MutableList<SecurityRisk> {
         val risks = mutableListOf<SecurityRisk>()
         
         // Check for password prompts
