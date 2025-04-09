@@ -86,28 +86,56 @@ class CustomTFLiteClassifier(context: Context) {
 
             val jsonStr =
                 context.assets.open("tokenizer.json").bufferedReader().use { it.readText() }
-            val json = JSONObject(jsonStr)
+            try {
+                val json = JSONObject(jsonStr)
 
-            // Check if "word_index" key exists in the JSON
-            if (!json.has("word_index")) {
-                Log.e(TAG, "JSON does not contain 'word_index' key")
+                // Try to find word_index directly in the main object
+                if (json.has("word_index")) {
+                    Log.d(TAG, "Found word_index in main JSON object")
+                    val wordIndexJson = json.getJSONObject("word_index")
+                    return extractWordIndexMap(wordIndexJson)
+                }
+
+                // Try to find word_index in the config object
+                if (json.has("config")) {
+                    val config = json.getJSONObject("config")
+                    if (config.has("word_index")) {
+                        Log.d(TAG, "Found word_index in config object")
+                        val wordIndexJson = config.getJSONObject("word_index")
+                        return extractWordIndexMap(wordIndexJson)
+                    }
+                }
+
+                // Couldn't find word_index in expected locations
+                Log.e(TAG, "Could not find word_index in JSON structure")
+                return createDefaultWordIndex()
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error parsing JSON: ${e.message}")
                 return createDefaultWordIndex()
             }
-
-            val wordIndexJson = json.getJSONObject("word_index")
-            val wordIndexMap = mutableMapOf<String, Int>()
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading tokenizer: ${e.message}")
+            e.printStackTrace()
+            createDefaultWordIndex()
+        }
+    }
+    
+    // Helper function to extract the word index map from a JSONObject
+    private fun extractWordIndexMap(wordIndexJson: JSONObject): Map<String, Int> {
+        val wordIndexMap = mutableMapOf<String, Int>()
+        try {
             val keys = wordIndexJson.keys()
             while (keys.hasNext()) {
                 val key = keys.next()
                 wordIndexMap[key] = wordIndexJson.getInt(key)
             }
-
             Log.d(TAG, "Loaded word index with ${wordIndexMap.size} entries")
-            wordIndexMap
+            return wordIndexMap
         } catch (e: Exception) {
-            Log.e(TAG, "Error loading tokenizer: ${e.message}")
-            e.printStackTrace()
-            createDefaultWordIndex()
+            Log.e(TAG, "Error extracting word index map: ${e.message}")
+            return createDefaultWordIndex()
         }
     }
 

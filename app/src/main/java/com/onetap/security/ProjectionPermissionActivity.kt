@@ -28,7 +28,7 @@ class ProjectionPermissionActivity : ComponentActivity() {
             Log.d(TAG, "Already have projection permission, starting floating widget")
             
             // Start the floating widget service with existing permission
-            val startServiceIntent = Intent(this, ScreenCaptureService::class.java)
+            val startServiceIntent = Intent(this, FloatingWidgetService::class.java)
             startForegroundService(startServiceIntent)
             
             // Finish the activity immediately
@@ -118,17 +118,18 @@ class ProjectionPermissionActivity : ComponentActivity() {
 
 object ProjectionStore {
     @Volatile
-    var resultCode: Int = -1
+    var resultCode: Int = 0  // Default to 0, needs to be set to -1 for success
     
     @Volatile
     var resultData: Intent? = null
     
     fun hasValidPermission(): Boolean {
+        // In Android, resultCode == -1 (RESULT_OK) means success
         return resultCode == -1 && resultData != null
     }
     
     fun reset() {
-        resultCode = -1
+        resultCode = 0
         resultData = null
     }
 }
