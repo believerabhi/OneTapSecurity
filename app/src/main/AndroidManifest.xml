@@ -52,22 +52,3 @@
     </application>
 
 </manifest>
-
-
-<!--    // AndroidManifest.xml-->
-<!--<manifest xmlns:android="http://schemas.android.com/apk/res/android"-->
-<!--package="com.example.screenanalyzer">-->
-
-
-
-<!--<application-->
-<!--    android:allowBackup="true"-->
-<!--    android:icon="@mipmap/ic_launcher"-->
-<!--    android:label="ScreenAnalyzer"-->
-<!--    android:roundIcon="@mipmap/ic_launcher_round"-->
-<!--    android:supportsRtl="true"-->
-<!--    android:theme="@style/Theme.AppCompat">-->
-
-
-<!--</application>-->
-<!--</manifest>-->

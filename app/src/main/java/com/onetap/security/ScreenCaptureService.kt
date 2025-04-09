@@ -23,15 +23,11 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
     private val TAG = "ScreenCaptureService"
     private val handler = Handler(Looper.getMainLooper())
 
-    // Security preferences
     private lateinit var securityPreferences: SecurityPreferences
-
-    // Refactored components
     private lateinit var screenCaptureManager: ScreenCaptureManager
     private lateinit var screenAnalyzer: ScreenAnalyzer
     private lateinit var imageProcessor: ImageProcessor
 
-    // Flags to prevent duplicate processing
     private var isAnalyzing = false
     private var isProcessingComplete = false
     private var hasShownNotification = false
@@ -40,21 +36,10 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
         super.onDestroy()
         Log.d(TAG, "onDestroy called")
 
-        // Clean up resources
-        if (::screenCaptureManager.isInitialized) {
-            screenCaptureManager.release()
-        }
-        if (::screenAnalyzer.isInitialized) {
-            screenAnalyzer.close()
-        }
+        if (::screenCaptureManager.isInitialized) screenCaptureManager.release()
+        if (::screenAnalyzer.isInitialized) screenAnalyzer.close()
 
-        // Ensure floating widget is updated
-        val finishProcessingIntent =
-            Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-        androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
-            .sendBroadcast(finishProcessingIntent)
-
-        // Cancel all coroutines when service is destroyed
+        sendLocalBroadcast(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
         cancel()
     }
 
@@ -62,26 +47,16 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
         super.onCreate()
         Log.d(TAG, "onCreate called")
 
-        // Initialize security preferences
         securityPreferences = SecurityPreferences.getInstance(this)
-
-        // Initialize ImageProcessor
         imageProcessor = ImageProcessor()
-
-        // Initialize screen analyzer
         screenAnalyzer = ScreenAnalyzer(this)
 
-        // Initialize screen capture manager
-        screenCaptureManager = ScreenCaptureManager(this, handler, this)
-        screenCaptureManager.initialize()
+        screenCaptureManager = ScreenCaptureManager(this, handler, this).apply {
+            initialize()
+            setScreenshotCallback(this@ScreenCaptureService)
+        }
 
-        // Set callback for direct bitmap processing
-        screenCaptureManager.setScreenshotCallback(this)
-
-        // Create notification channel first
         createNotificationChannel()
-
-        // Then start foreground service with notification
         startForeground(1, createNotification())
     }
 
@@ -89,17 +64,19 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
         val channelId = "screencapture"
         val channelName = getString(R.string.notification_channel_name)
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val chan = NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_LOW)
-        manager.createNotificationChannel(chan)
+        manager.createNotificationChannel(
+            NotificationChannel(
+                channelId,
+                channelName,
+                NotificationManager.IMPORTANCE_LOW
+            )
+        )
     }
 
     private fun createNotification(): Notification {
         val channelId = "screencapture"
-
-        // Create a pending intent that goes to MainActivity
-        val tapIntent = Intent(this, MainActivity::class.java)
-        val pendingIntent =
-            PendingIntent.getActivity(this, 0, tapIntent, PendingIntent.FLAG_IMMUTABLE)
+        val intent = Intent(this, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
 
         return Notification.Builder(this, channelId)
             .setContentTitle(getString(R.string.notification_running))
@@ -108,6 +85,7 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
             .setContentIntent(pendingIntent)
             .build()
     }
+
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -119,178 +97,26 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
         val resultData = intent?.getParcelableExtra<Intent>("data")
 
         if (resultCode == null || resultData == null) {
-            Log.e(TAG, "Missing or invalid projection data")
-
-            // Reset stored permissions
-            ProjectionStore.reset()
-
-            // Notify UI and user
-            sendLocalBroadcast(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-            Toast.makeText(this, "Missing or invalid projection data. Try restarting the app.", Toast.LENGTH_LONG).show()
-
-            stopSelf()
+            handleProjectionError("Missing or invalid projection data. Try restarting the app.")
             return START_NOT_STICKY
         }
 
         return try {
-            Log.d(TAG, "Starting capture with resultCode=$resultCode and valid data")
-
-            // Reset internal state
             isAnalyzing = false
             isProcessingComplete = false
             hasShownNotification = false
 
-            // Notify processing start
             sendLocalBroadcast(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_STARTED)
-            Log.d(TAG, "Sent broadcast: Screenshot processing started")
-
-            // Start screen capture
             screenCaptureManager.startScreenCapture(resultCode, resultData)
-
             START_STICKY
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting screen capture: ${e.message}", e)
-
-            // Reset permissions and notify UI
-            ProjectionStore.reset()
-            sendLocalBroadcast(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-            Toast.makeText(this, "Error starting screen capture: ${e.message}", Toast.LENGTH_LONG).show()
-
-            stopSelf()
+            handleProjectionError("Error starting screen capture: ${e.message}", e)
             START_NOT_STICKY
         }
     }
 
-    // Helper function to send local broadcasts
-    private fun sendLocalBroadcast(action: String) {
-        val intent = Intent(action)
-        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
-    }
-
-
-    /**
-     * Callback when screenshot is captured - direct bitmap processing
-     */
-    override fun onScreenshotCaptured(bitmap: Bitmap) {
-        // Don't process if already analyzing or disabled
-        if (isAnalyzing || !securityPreferences.isSecurityEnabled() || isProcessingComplete) {
-            return
-        }
-
-        isAnalyzing = true
-
-        launch(Dispatchers.Main) {
-            try {
-                // Show processing notification
-                val processingNotification = createProcessingNotification()
-                val notificationManager =
-                    getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                notificationManager.notify(2, processingNotification)
-
-                var result: ScreenAnalysisResult? = null
-                var analysisError: Exception? = null
-
-                // Process the bitmap directly
-                try {
-                    withTimeout(15000) { // 15 second timeout
-                        result = withContext(Dispatchers.Default) {
-                            screenAnalyzer.analyzeBitmap(bitmap)
-                        }
-                    }
-                } catch (e: TimeoutCancellationException) {
-                    analysisError = Exception("Analysis timed out after 15 seconds")
-                    Log.e(TAG, "Analysis timed out after 15 seconds")
-                } catch (e: Exception) {
-                    analysisError = e
-                    Log.e(TAG, "Error in text analysis: ${e.message}")
-                }
-
-                if (result != null && !isProcessingComplete) {
-                    isProcessingComplete = true
-                    // Handle the results
-                    handleScreenAnalysisResult(result!!)
-                } else if (!isProcessingComplete) {
-                    isProcessingComplete = true
-                    // Handle the error case
-                    showResultNotification(
-                        "Analysis Error",
-                        "Unable to analyze the screenshot: ${analysisError?.message ?: "Unknown error"}",
-                        null
-                    )
-                }
-
-                // Always notify that processing has finished
-                val finishProcessingIntent =
-                    Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-                androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this@ScreenCaptureService)
-                    .sendBroadcast(finishProcessingIntent)
-                Log.d(TAG, "Sent broadcast: Screenshot processing finished")
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Error processing bitmap: ${e.message}")
-                e.printStackTrace()
-
-                // Show error notification
-                if (!hasShownNotification) {
-                    hasShownNotification = true
-                    showResultNotification(
-                        "Error processing screenshot",
-                        "Unable to analyze the screen contents.",
-                        null
-                    )
-                }
-
-                // Notify that processing has finished with error
-                val finishProcessingIntent =
-                    Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-                androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this@ScreenCaptureService)
-                    .sendBroadcast(finishProcessingIntent)
-
-                // Stop the service
-                stopSelf()
-            } finally {
-                // Make sure the bitmap is recycled to free memory
-                if (!bitmap.isRecycled) {
-                    bitmap.recycle()
-                }
-            }
-        }
-    }
-
-    /**
-     * Handle error in screenshot capture
-     */
-    override fun onError(errorMessage: String) {
-        Log.e(TAG, "Screenshot capture error: $errorMessage")
-
-        // Show error toast and notification
-        Toast.makeText(this, "Screenshot capture failed: $errorMessage", Toast.LENGTH_SHORT).show()
-
-        if (!hasShownNotification) {
-            hasShownNotification = true
-            showResultNotification(
-                "Screenshot Error",
-                "Failed to capture screenshot: $errorMessage",
-                null
-            )
-        }
-
-        // Notify that processing has finished with error
-        val finishProcessingIntent =
-            Intent(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
-        androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
-            .sendBroadcast(finishProcessingIntent)
-
-        stopSelf()
-    }
-
-    /**
-     * Create a notification for when processing is happening
-     */
     private fun createProcessingNotification(): Notification {
-        val channelId = "screencapture"
-
-        return Notification.Builder(this, channelId)
+        return Notification.Builder(this, "screencapture")
             .setContentTitle(getString(R.string.notification_processing))
             .setContentText(getString(R.string.notification_analyzing))
             .setSmallIcon(R.drawable.ic_launcher_foreground)
@@ -298,63 +124,115 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
             .build()
     }
 
+    private fun sendLocalBroadcast(action: String) {
+        LocalBroadcastManager.getInstance(this).sendBroadcast(Intent(action))
+    }
+
+    private fun handleProjectionError(message: String, e: Exception? = null) {
+        Log.e(TAG, message, e)
+        ProjectionStore.reset()
+        sendLocalBroadcast(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        stopSelf()
+    }
+
+    private fun Bitmap.recycleSafely() {
+        if (!isRecycled) recycle()
+    }
+
+
+    /**
+     * Callback when screenshot is captured - direct bitmap processing
+     */
+    override fun onScreenshotCaptured(bitmap: Bitmap) {
+        if (isAnalyzing || !securityPreferences.isSecurityEnabled() || isProcessingComplete) return
+
+        isAnalyzing = true
+
+        launch(Dispatchers.Main) {
+            val notificationManager =
+                getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.notify(2, createProcessingNotification())
+
+            var result: ScreenAnalysisResult? = null
+            var analysisError: Exception? = null
+
+            try {
+                withTimeout(15000) {
+                    result = withContext(Dispatchers.Default) {
+                        screenAnalyzer.analyzeBitmap(bitmap)
+                    }
+                }
+            } catch (e: TimeoutCancellationException) {
+                analysisError = Exception("Analysis timed out")
+                Log.e(TAG, analysisError.message.orEmpty())
+            } catch (e: Exception) {
+                analysisError = e
+                Log.e(TAG, "Error in analysis: ${e.message}")
+            }
+
+            isProcessingComplete = true
+
+            if (result != null) {
+                handleScreenAnalysisResult(result!!)
+            } else {
+                showResultNotification(
+                    "Analysis Error",
+                    "Unable to analyze: ${analysisError?.message ?: "Unknown error"}"
+                )
+            }
+
+            sendLocalBroadcast(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+            bitmap.recycleSafely()
+        }
+    }
+
+
+    /**
+     * Handle error in screenshot capture
+     */
+    override fun onError(errorMessage: String) {
+        Log.e(TAG, "Screenshot capture error: $errorMessage")
+        Toast.makeText(this, "Screenshot capture failed: $errorMessage", Toast.LENGTH_SHORT).show()
+
+        if (!hasShownNotification) {
+            showResultNotification("Screenshot Error", "Failed to capture: $errorMessage")
+        }
+
+        sendLocalBroadcast(FloatingWidgetService.ACTION_SCREENSHOT_PROCESSING_FINISHED)
+        stopSelf()
+    }
+
     /**
      * Handle the results of screen analysis
      */
     private fun handleScreenAnalysisResult(result: ScreenAnalysisResult) {
         launch(Dispatchers.Main) {
-            Log.d(TAG, "Screen analysis completed, success: ${result.success}")
+            Log.d(TAG, "Screen analysis completed: ${result.success}")
 
             if (result.success && result.securityAnalysis != null && result.extractedText != null) {
                 try {
-                    val securityRisks = result.securityAnalysis.securityRisks
-                    val sensitiveInfo = result.securityAnalysis.sensitiveInformation
+                    val risks = result.securityAnalysis.securityRisks
+                    val sensitive = result.securityAnalysis.sensitiveInformation
 
-                    // Determine notification based on verdict or risk level
-                    if (securityRisks.isNotEmpty() || sensitiveInfo.isNotEmpty()) {
-                        // Security risks or sensitive information detected
-                        val risksText = if (securityRisks.isNotEmpty()) {
-                            "${securityRisks.size} security risks found"
-                        } else {
-                            "No security risks found"
-                        }
+                    val riskText =
+                        if (risks.isNotEmpty()) "${risks.size} security risks found" else "No risks"
+                    val sensitiveText =
+                        if (sensitive.isNotEmpty()) "${sensitive.size} sensitive items" else "No sensitive info"
 
-                        val sensitiveText = if (sensitiveInfo.isNotEmpty()) {
-                            "${sensitiveInfo.size} pieces of sensitive information detected"
-                        } else {
-                            "No sensitive information detected"
-                        }
-
-                        showResultNotification(
-                            "Security Alert",
-                            "$risksText\n$sensitiveText",
-                            result.extractedText.fullText
-                        )
-
-                        Log.d(TAG, "Security risks: $securityRisks")
-                        Log.d(TAG, "Sensitive info: $sensitiveInfo")
-                    } else {
-                        // No security risks or sensitive information detected
-                        showResultNotification(
-                            "Screen Analyzed",
-                            "No security risks or sensitive information detected" +
-                                    result.extractedText.fullText
-                        )
-                        Log.d(TAG, "No security risks or sensitive information detected")
-                    }
+                    showResultNotification(
+                        "Security Alert",
+                        "$riskText\n$sensitiveText",
+                        result.extractedText.fullText
+                    )
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error processing analysis results: ${e.message}")
                     fallbackResultHandling(result)
                 }
             } else {
-                // Analysis failed
                 fallbackResultHandling(result)
             }
 
-            // Give time for notification to be seen, then stop service
-            handler.postDelayed({
-                stopSelf()
-            }, 5000)
+            handler.postDelayed({ stopSelf() }, 5000)
         }
     }
 
@@ -362,72 +240,40 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
      * Fallback handling for when AI enhancement fails
      */
     private fun fallbackResultHandling(result: ScreenAnalysisResult) {
-        if (result.success && result.securityAnalysis != null) {
-            val securityRisks = result.securityAnalysis.securityRisks
-            val sensitiveInfo = result.securityAnalysis.sensitiveInformation
+        val risks = result.securityAnalysis?.securityRisks.orEmpty()
+        val sensitive = result.securityAnalysis?.sensitiveInformation.orEmpty()
+        val text = result.extractedText?.fullText
 
-            if (securityRisks.isNotEmpty() || sensitiveInfo.isNotEmpty()) {
-                val risksText = if (securityRisks.isNotEmpty()) {
-                    "${securityRisks.size} security risks found"
-                } else {
-                    "No security risks found"
-                }
+        val riskText = if (risks.isNotEmpty()) "${risks.size} security risks" else "No risks"
+        val sensitiveText =
+            if (sensitive.isNotEmpty()) "${sensitive.size} sensitive items" else "No sensitive info"
 
-                val sensitiveText = if (sensitiveInfo.isNotEmpty()) {
-                    "${sensitiveInfo.size} pieces of sensitive information detected"
-                } else {
-                    "No sensitive information detected"
-                }
+        val title =
+            if (risks.isNotEmpty() || sensitive.isNotEmpty()) "Security Alert" else "Screen Analyzed"
+        val content = "$riskText\n$sensitiveText"
 
-                showResultNotification(
-                    "Security Alert",
-                    "$risksText\n$sensitiveText",
-                    result.extractedText?.fullText
-                )
-            } else {
-                showResultNotification(
-                    "Screen Analyzed",
-                    "No security risks or sensitive information detected",
-                    result.extractedText?.fullText
-                )
-            }
-        } else {
-            // Analysis failed
-            showResultNotification(
-                "Analysis Incomplete",
-                "Unable to fully analyze the screen: ${result.errorMessage ?: "Unknown error"}",
-                result.extractedText?.fullText
-            )
-            Log.e(TAG, "Analysis failed: ${result.errorMessage}")
-        }
+        showResultNotification(title, content, text)
     }
 
     /**
      * Show a notification with the analysis results
      */
     private fun showResultNotification(title: String, content: String, rawText: String? = null) {
-        if (hasShownNotification) {
-            Log.d(TAG, "Skipping duplicate notification")
-            return
-        }
+        Log.d(TAG, "Screen analysis completed: ${hasShownNotification}")
+        if (hasShownNotification) return
 
         hasShownNotification = true
         val channelId = "screencapture"
 
-        // Create intent to open activity that shows detailed results
         val resultIntent = Intent(this, ResultActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            // Pass result data to the activity
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
             putExtra("security_risks", title)
             putExtra("sensitive_info", content)
-            rawText?.let {
-                putExtra("raw_text", it)
-            }
+            rawText?.let { putExtra("raw_text", it) }
         }
 
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, resultIntent, PendingIntent.FLAG_IMMUTABLE
-        )
+        val pendingIntent =
+            PendingIntent.getActivity(this, 0, resultIntent, PendingIntent.FLAG_IMMUTABLE)
 
         val notification = Notification.Builder(this, channelId)
             .setContentTitle(title)
@@ -438,8 +284,9 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
             .setAutoCancel(true)
             .build()
 
-        val notificationManager =
-            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(3, notification)
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(
+            3,
+            notification
+        )
     }
 }

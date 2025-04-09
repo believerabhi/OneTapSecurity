@@ -2,7 +2,9 @@ package com.onetap.security
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
@@ -14,6 +16,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.onetap.security.ui.SecurityScreen
 import com.onetap.security.ui.SecurityViewModel
 import com.onetap.security.ui.theme.OneTapSecurityTheme
@@ -36,6 +40,13 @@ class MainActivity : ComponentActivity() {
 
         // Set up Compose UI
         setContent {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED
+                ) {
+                    ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
+                }
+            }
             OneTapSecurityTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
