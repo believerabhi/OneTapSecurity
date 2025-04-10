@@ -8,6 +8,18 @@ import java.io.FileInputStream
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 
+/**
+ * Data class to hold the prediction result with confidence score
+ * @param label The predicted label/class
+ * @param confidence The confidence score (0.0-1.0)
+ * @param isFallback Whether this prediction was made by the fallback method
+ */
+data class PredictionResult(
+    val label: String,
+    val confidence: Float,
+    val isFallback: Boolean
+)
+
 class CustomTFLiteClassifier(context: Context) {
     private val TAG = "CustomTFLiteClassifier"
     private val maxLen = 50
@@ -39,25 +51,67 @@ class CustomTFLiteClassifier(context: Context) {
         }
     }
 
-    fun classifyText(text: String): String {
+    /**
+     * Classifies text and returns a PredictionResult containing the predicted label and confidence
+     * @param text The text to classify
+     * @return PredictionResult with label and confidence
+     */
+    fun classifyText(text: String): PredictionResult {
         if (!initialized || interpreter == null || wordIndex == null) {
             Log.w(TAG, "Classifier not fully initialized, returning fallback result")
-            // Perform simple keyword-based classification as fallback
-            return fallbackClassify(text)
+            // Perform confidence-based fallback classification
+            return fallbackClassifyWithConfidence(text)
         }
 
         try {
             val input = tokenize(text)
             val output = Array(1) { FloatArray(labels.size) }
             interpreter?.run(arrayOf(input), output)
+            // Find the index with maximum value
             val prediction = output[0].indices.maxByOrNull { output[0][it] } ?: -1
+            
+            // Get the predicted label
             val predictedLabel = labels.getOrElse(prediction) { "unknown" }
-            Log.d(TAG, "Prediction: $predictedLabel (index: $prediction)")
-            return predictedLabel
+            
+            // Get the confidence score for the prediction (the value at the max index)
+            val confidence = if (prediction >= 0) output[0][prediction] else 0.0f
+            
+            // Apply softmax to get a probability between 0 and 1
+            val probabilities = softmax(output[0])
+            val normalizedConfidence = probabilities[prediction]
+            
+            Log.d(TAG, "Prediction: $predictedLabel (index: $prediction, confidence: $normalizedConfidence)")
+            
+            return PredictionResult(predictedLabel, normalizedConfidence, false)
         } catch (e: Exception) {
             Log.e(TAG, "Error classifying text: ${e.message}")
-            return fallbackClassify(text)
+            return fallbackClassifyWithConfidence(text)
         }
+    }
+    
+    /**
+     * Apply softmax function to convert raw model outputs to probabilities
+     * @param output The raw output array from the model
+     * @return FloatArray of probabilities that sum to 1.0
+     */
+    private fun softmax(output: FloatArray): FloatArray {
+        val result = FloatArray(output.size)
+        var sum = 0.0f
+        
+        // Apply exp to each value and sum
+        for (i in output.indices) {
+            result[i] = Math.exp(output[i].toDouble()).toFloat()
+            sum += result[i]
+        }
+        
+        // Normalize to get probabilities
+        if (sum > 0) {
+            for (i in result.indices) {
+                result[i] /= sum
+            }
+        }
+        
+        return result
     }
 
     private fun tokenize(text: String): FloatArray {
@@ -211,6 +265,8 @@ class CustomTFLiteClassifier(context: Context) {
 
     /**
      * Fallback classification using keyword matching
+     * @param text The text to classify
+     * @return The predicted label
      */
     private fun fallbackClassify(text: String): String {
         val lowercaseText = text.lowercase()
@@ -251,6 +307,72 @@ class CustomTFLiteClassifier(context: Context) {
 
         // Default to safe if no patterns match
         return "safe"
+    }
+    
+    /**
+     * Fallback classification with confidence estimation
+     * @param text The text to classify
+     * @return PredictionResult with label and estimated confidence
+     */
+    private fun fallbackClassifyWithConfidence(text: String): PredictionResult {
+        val lowercaseText = text.lowercase()
+        var confidence = 0.7f // Default medium confidence for fallback
+        var matchCount = 0
+        var totalPatterns = 0
+        
+        // Count matches for credential stealing
+        totalPatterns += 3  // We check for 3 patterns
+        if (lowercaseText.contains("password")) matchCount++
+        if (lowercaseText.contains("login")) matchCount++
+        if (lowercaseText.contains("enter") || lowercaseText.contains("verify") || 
+            lowercaseText.contains("confirm")) matchCount++
+            
+        if (matchCount == 3) {
+            confidence = 0.85f  // Higher confidence with more matches
+            return PredictionResult("credential_stealing", confidence, true)
+        }
+        
+        // Reset and check for phishing
+        matchCount = 0
+        totalPatterns = 3
+        if (lowercaseText.contains("account")) matchCount++
+        if (lowercaseText.contains("verify")) matchCount++
+        if (lowercaseText.contains("suspicious")) matchCount++
+        if (lowercaseText.contains("activity")) matchCount++
+        if (lowercaseText.contains("click")) matchCount++
+        if (lowercaseText.contains("link")) matchCount++
+        
+        if (matchCount >= 4) {
+            confidence = 0.82f
+            return PredictionResult("phishing", confidence, true)
+        }
+        
+        // Reset and check for financial scam
+        matchCount = 0
+        if (lowercaseText.contains("bank")) matchCount++
+        if (lowercaseText.contains("credit card")) matchCount++
+        if (lowercaseText.contains("payment")) matchCount++
+        if (lowercaseText.contains("money")) matchCount++
+        
+        if (matchCount >= 2) {
+            confidence = 0.78f
+            return PredictionResult("financial_scam", confidence, true)
+        }
+        
+        // Reset and check for malware
+        matchCount = 0
+        if (lowercaseText.contains("download")) matchCount++
+        if (lowercaseText.contains("install")) matchCount++
+        if (lowercaseText.contains("update")) matchCount++
+        if (lowercaseText.contains("now")) matchCount++
+        
+        if (matchCount >= 2) {
+            confidence = 0.75f
+            return PredictionResult("malware", confidence, true)
+        }
+        
+        // Default to safe with high confidence if no patterns match
+        return PredictionResult("safe", 0.9f, true)
     }
 
     fun close() {

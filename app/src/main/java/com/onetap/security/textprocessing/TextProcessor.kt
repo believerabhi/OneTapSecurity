@@ -38,16 +38,33 @@ class TextProcessor(private val context: Context) {
             val classifier = CustomTFLiteClassifier(context)
             if (classifier.isInitialized()) {
                 val prediction = classifier.classifyText(extractionResult.fullText)
-                Log.d(TAG, "Custom TFLite classification result: $prediction")
+                Log.d(TAG, "Custom TFLite classification result: ${prediction.label} with confidence ${prediction.confidence}")
                 
-                if (prediction != "safe") {
+                // Only add as a risk if it's not classified as "safe"
+                if (prediction.label != "safe") {
+                    // Determine severity based on confidence level
+                    val severity = when {
+                        prediction.confidence > 0.9f -> RiskSeverity.CRITICAL
+                        prediction.confidence > 0.7f -> RiskSeverity.HIGH
+                        prediction.confidence > 0.5f -> RiskSeverity.MEDIUM
+                        else -> RiskSeverity.LOW
+                    }
+                    
+                    // Include confidence in the description
+                    val confidencePercent = (prediction.confidence * 100).toInt()
+                    val fallbackNote = if (prediction.isFallback) " (rule-based)" else " (AI model)"
+                    
                     securityRisks.add(
                         SecurityRisk(
                             type = SecurityRiskType.KNOWN_PHISHING,
-                            description = "TFLite model detected: $prediction",
-                            severity = RiskSeverity.HIGH
+                            description = "AI detected ${prediction.label} with ${confidencePercent}% confidence$fallbackNote",
+                            severity = severity,
+                            confidence = prediction.confidence
                         )
                     )
+                } else {
+                    // If the model classified it as safe with high confidence, we can log this
+                    Log.d(TAG, "Content classified as safe with ${prediction.confidence} confidence")
                 }
             } else {
                 Log.w(TAG, "TFLite classifier not initialized, skipping classification")
@@ -76,29 +93,36 @@ class TextProcessor(private val context: Context) {
             risks.add(SecurityRisk(
                 type = SecurityRiskType.PASSWORD_PROMPT,
                 description = "Password prompt detected",
-                severity = RiskSeverity.HIGH
+                severity = RiskSeverity.HIGH,
+                confidence = 0.85f  // Higher confidence for password prompts
             ))
         }
         
         // Check for suspicious URLs
         val suspiciousUrls = findSuspiciousUrls(text)
         if (suspiciousUrls.isNotEmpty()) {
+            // Calculate confidence based on number of URLs found
+            val urlConfidence = minOf(0.7f + (suspiciousUrls.size * 0.05f), 0.9f)
+            
             risks.add(SecurityRisk(
                 type = SecurityRiskType.SUSPICIOUS_URL,
                 description = "Suspicious URL detected: ${suspiciousUrls.joinToString(", ")}",
                 severity = RiskSeverity.MEDIUM,
-                detectedValues = suspiciousUrls
+                detectedValues = suspiciousUrls,
+                confidence = urlConfidence
             ))
         }
         
         // Check for authentication tokens
         val authTokens = findAuthTokens(text)
         if (authTokens.isNotEmpty()) {
+            // Auth tokens are highly indicative of sensitive content
             risks.add(SecurityRisk(
                 type = SecurityRiskType.AUTH_TOKEN,
                 description = "Authentication token detected",
                 severity = RiskSeverity.HIGH,
-                detectedValues = authTokens
+                detectedValues = authTokens,
+                confidence = 0.95f  // Very high confidence
             ))
         }
         
@@ -323,7 +347,8 @@ data class SecurityRisk(
     val type: SecurityRiskType,
     val description: String,
     val severity: RiskSeverity,
-    val detectedValues: List<String> = emptyList()
+    val detectedValues: List<String> = emptyList(),
+    val confidence: Float = 0.0f  // Default to 0 if not provided
 )
 
 /**

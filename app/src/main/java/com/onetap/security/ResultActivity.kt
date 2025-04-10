@@ -17,10 +17,16 @@ class ResultActivity : ComponentActivity() {
         val securityRisks = intent.getStringExtra("security_risks") ?: "No security risks detected"
         val sensitiveInfo = intent.getStringExtra("sensitive_info") ?: "No sensitive information detected"
         val rawText = intent.getStringExtra("raw_text") ?: ""
+        val confidence = intent.getFloatExtra("confidence", 0.0f)
         
-        // Set title that indicates if AI was used
-        title = if (sensitiveInfo.contains("AI")) {
-            "Analysis Results (AI Enhanced)"
+        // Format confidence for display if significant
+        val confidenceText = if (confidence > 0) {
+            "${(confidence * 100).toInt()}% confidence"
+        } else ""
+        
+        // Set title that indicates confidence
+        title = if (confidence > 0) {
+            "Analysis Results ($confidenceText)"
         } else {
             "Analysis Results"
         }

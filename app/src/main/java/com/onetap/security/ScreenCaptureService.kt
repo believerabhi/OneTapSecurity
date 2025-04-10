@@ -215,15 +215,32 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
                     val risks = result.securityAnalysis.securityRisks
                     val sensitive = result.securityAnalysis.sensitiveInformation
 
+                    // Calculate average confidence of detected risks
+                    val avgConfidence = if (risks.isNotEmpty()) {
+                        risks.map { it.confidence }.average().toFloat()
+                    } else 0f
+                    
+                    // Format with confidence percentage if available
+                    val confidenceText = if (avgConfidence > 0) {
+                        " (${(avgConfidence * 100).toInt()}% confidence)"
+                    } else ""
+                    
                     val riskText =
-                        if (risks.isNotEmpty()) "${risks.size} security risks found" else "No risks"
+                        if (risks.isNotEmpty()) "${risks.size} security risks found$confidenceText" else "No risks"
                     val sensitiveText =
                         if (sensitive.isNotEmpty()) "${sensitive.size} sensitive items" else "No sensitive info"
 
+                    // Include highest confidence risk in notification if available
+                    val highestConfidenceRisk = risks.maxByOrNull { it.confidence }
+                    val detailText = if (highestConfidenceRisk != null && highestConfidenceRisk.confidence > 0.7f) {
+                        "\n\nHighest risk: ${highestConfidenceRisk.description}"
+                    } else ""
+
                     showResultNotification(
                         "Security Alert",
-                        "$riskText\n$sensitiveText",
-                        result.extractedText.fullText
+                        "$riskText\n$sensitiveText$detailText",
+                        result.extractedText.fullText,
+                        avgConfidence
                     )
                 } catch (e: Exception) {
                     fallbackResultHandling(result)
@@ -244,7 +261,17 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
         val sensitive = result.securityAnalysis?.sensitiveInformation.orEmpty()
         val text = result.extractedText?.fullText
 
-        val riskText = if (risks.isNotEmpty()) "${risks.size} security risks" else "No risks"
+        // Calculate average confidence of risks if available
+        val avgConfidence = if (risks.isNotEmpty()) {
+            risks.map { it.confidence }.average().toFloat()
+        } else 0f
+        
+        // Format with confidence percentage if available
+        val confidenceText = if (avgConfidence > 0) {
+            " (${(avgConfidence * 100).toInt()}% confidence)"
+        } else ""
+        
+        val riskText = if (risks.isNotEmpty()) "${risks.size} security risks$confidenceText" else "No risks"
         val sensitiveText =
             if (sensitive.isNotEmpty()) "${sensitive.size} sensitive items" else "No sensitive info"
 
@@ -252,14 +279,23 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
             if (risks.isNotEmpty() || sensitive.isNotEmpty()) "Security Alert" else "Screen Analyzed"
         val content = "$riskText\n$sensitiveText"
 
-        showResultNotification(title, content, text)
+        showResultNotification(title, content, text, avgConfidence)
     }
 
     /**
      * Show a notification with the analysis results
+     * @param title The notification title
+     * @param content The notification content
+     * @param rawText The raw extracted text
+     * @param confidence The average confidence of all risks (0.0-1.0)
      */
-    private fun showResultNotification(title: String, content: String, rawText: String? = null) {
-        Log.d(TAG, "Screen analysis completed: ${hasShownNotification}")
+    private fun showResultNotification(
+        title: String, 
+        content: String, 
+        rawText: String? = null,
+        confidence: Float = 0.0f
+    ) {
+        Log.d(TAG, "Screen analysis completed: ${hasShownNotification}, confidence: $confidence")
         if (hasShownNotification) return
 
         hasShownNotification = true
@@ -269,14 +305,22 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
             putExtra("security_risks", title)
             putExtra("sensitive_info", content)
+            putExtra("confidence", confidence)
             rawText?.let { putExtra("raw_text", it) }
         }
 
         val pendingIntent =
             PendingIntent.getActivity(this, 0, resultIntent, PendingIntent.FLAG_IMMUTABLE)
 
+        // Add confidence indicator to title if significant
+        val titleWithConfidence = if (confidence > 0.5f) {
+            "$title (${(confidence * 100).toInt()}% confidence)"
+        } else {
+            title
+        }
+
         val notification = Notification.Builder(this, channelId)
-            .setContentTitle(title)
+            .setContentTitle(titleWithConfidence)
             .setContentText(content)
             .setStyle(Notification.BigTextStyle().bigText(content))
             .setSmallIcon(R.drawable.ic_launcher_foreground)

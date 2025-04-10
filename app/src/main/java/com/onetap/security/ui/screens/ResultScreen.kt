@@ -1,16 +1,26 @@
 package com.onetap.security.ui.screens
 
+import android.util.Log
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -41,7 +51,7 @@ fun ResultScreen(
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 24.dp)
+                .padding(bottom = 8.dp)
         )
         
         // Security Risks Section
@@ -49,7 +59,7 @@ fun ResultScreen(
             text = "Security Risks",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 8.dp)
+            modifier = Modifier.padding(top = 16.dp)
         )
         
         Text(
@@ -70,6 +80,7 @@ fun ResultScreen(
         
         // Handle verdict coloring
         val verdictStartIndex = sensitiveInfo.indexOf("\n\nVERDICT:")
+        Log.d("ResultScreen", "$sensitiveInfo $verdictStartIndex")
         if (verdictStartIndex >= 0) {
             val baseText = sensitiveInfo.substring(0, verdictStartIndex)
             val verdictText = sensitiveInfo.substring(verdictStartIndex)
