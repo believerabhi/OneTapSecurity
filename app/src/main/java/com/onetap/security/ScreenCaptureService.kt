@@ -15,6 +15,7 @@ import com.onetap.security.textprocessing.ImageProcessor
 import com.onetap.security.textprocessing.RiskSeverity
 import com.onetap.security.textprocessing.ScreenAnalysisResult
 import com.onetap.security.textprocessing.ScreenAnalyzer
+import com.onetap.security.utils.DialogService
 import com.onetap.security.utils.SecurityPreferences
 import kotlinx.coroutines.*
 
@@ -253,7 +254,7 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
                     showResultNotification(
                         title,
                         "$riskText\n$sensitiveText$detailText",
-                        result.extractedText.fullText
+                        maxSeverity
                     )
                 } catch (e: Exception) {
                     fallbackResultHandling(result)
@@ -293,50 +294,31 @@ class ScreenCaptureService : Service(), CoroutineScope by MainScope(),
             if (risks.isNotEmpty() || sensitive.isNotEmpty()) "Security Alert" else "Screen Analyzed"
         val content = "$riskText\n$sensitiveText"
 
-        showResultNotification(title, content, text)
+        showResultNotification(title, content)
     }
 
     /**
-     * Show a notification with the analysis results
-     * @param title The notification title
-     * @param content The notification content
-     * @param rawText The raw extracted text
-     * @param confidence The average confidence of all risks (0.0-1.0)
+     * Show a dialog with the analysis results
+     * @param title The dialog title
+     * @param content The dialog content
      */
     private fun showResultNotification(
         title: String,
         content: String,
-        rawText: String? = null
+        maxSeverity: RiskSeverity = RiskSeverity.LOW
     ) {
         Log.d(TAG, "Screen analysis completed: $hasShownNotification")
         if (hasShownNotification) return
 
         hasShownNotification = true
-        val channelId = "screencapture"
 
-        val resultIntent = Intent(this, ResultActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-            putExtra("security_risks", title)
-            putExtra("sensitive_info", content)
-            rawText?.let { putExtra("raw_text", it) }
-        }
-
-        val pendingIntent =
-            PendingIntent.getActivity(this, 0, resultIntent, PendingIntent.FLAG_IMMUTABLE)
-
-
-        val notification = Notification.Builder(this, channelId)
-            .setContentTitle(title)
-            .setContentText(content)
-            .setStyle(Notification.BigTextStyle().bigText(content))
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .build()
-
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(
-            3,
-            notification
+        // Instead of showing a notification, we use DialogService to show a dialog
+        // This will appear on top of other apps with a title and content
+        DialogService.showSecurityAlertDialog(
+            context = this,
+            title = title,
+            content = content,
+            maxSeverity = maxSeverity.name
         )
     }
 }
